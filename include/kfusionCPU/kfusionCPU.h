@@ -117,20 +117,21 @@ class kfusionCPU
     //should be multiple of 32
     enum VolumeResolution
     {
-        VOLUME_X = 512, VOLUME_Y = 512, VOLUME_Z = 512
+        VOLUME_X = 128, VOLUME_Y = 128, VOLUME_Z = 128
     };
 
 public:
 
+    typedef Eigen::Matrix<float, 3, 3, Eigen::RowMajor> Matrix3frm;
+    typedef Eigen::Vector3f Vector3f;
+
     typedef cv::Mat DepthMap;
-    typedef boost::multi_array<point_3d, 2> VertexMap;
-    typedef boost::multi_array<point_3d, 2> NormalMap;
+    typedef boost::multi_array<Vector3f, 2> VertexMap;
+    typedef boost::multi_array<Vector3f, 2> NormalMap;
     typedef boost::array<DepthMap, LEVELS> DepthPyramid;
     typedef boost::array<VertexMap, LEVELS> VertexPyramid;
     typedef boost::array<NormalMap, LEVELS> NormalPyramid;
-
-    typedef Eigen::Matrix<float, 3, 3, Eigen::RowMajor> Matrix3frm;
-    typedef Eigen::Vector3f Vector3f;
+    typedef Eigen::Matrix<float,6,1> Vector6f;
 
     /**
      * Build a kinect fusion object, which can be run to process a ROS
@@ -175,7 +176,7 @@ public:
     }
     inline const VertexMap get_vertex_map() const
     {
-        return vertex_pyramid_curr_[0];
+        return vertex_pyramid_[0];
     }
 
 private:
@@ -188,16 +189,10 @@ private:
     DepthPyramid depth_pyramid_;
 
     /** \brief Vertex maps pyramid for current frame. */
-    VertexPyramid vertex_pyramid_curr_;
+    VertexPyramid vertex_pyramid_;
 
     /** \brief Normal maps pyramid for current frame. */
-    NormalPyramid normal_pyramid_curr_;
-
-    /** \brief Vertex maps pyramid for previous frame. */
-    VertexPyramid vertex_pyramid_prev_;
-
-    /** \brief Normal maps pyramid for previous frame. */
-    NormalPyramid normal_pyramid_prev_;
+    NormalPyramid normal_pyramid_;
 
     /** \brief Height of input depth image. */
     int rows_;
@@ -238,6 +233,8 @@ private:
     /** \brief Camera movement threshold. TSDF is integrated iff a camera movement metric exceedes some value. */
     float integration_metric_threshold_;
 
+    float robust_statistic_coefficient_;
+
     /** \brief Allocates all internal buffers.
      * \param[in] rows_arg
      * \param[in] cols_arg
@@ -261,6 +258,14 @@ private:
      * \param[in] dest vertex map
      */
     void create_normal_map(const VertexMap& src, NormalMap& dest);
+
+    /** \brief Integrates TSDF Volume
+     * \param[in] raw_depth_map
+     * \param[in] intr Camera Intrinsics
+     * \param[in] Rcam_inv Rotational part
+     * \param[in] tcam Translational part
+     */
+    void integrate(const cv::Mat& raw_depth_map, const Intr& intr, const Eigen::Matrix4f& camtoworld);
 
     Eigen::Vector3f rodrigues2(const Eigen::Matrix3f& matrix);
 
@@ -298,6 +303,13 @@ private:
     {
         return width(map);
     }
+
+    Vector6f EstimatePose(void);
+    std::vector<Eigen::Matrix4f,Eigen::aligned_allocator<Eigen::Matrix4f> > transformations_;
+    Eigen::Matrix4f Transformation_;
+    Vector6f Pose_;
+    Vector6f cumulative_pose_;
+    bool first_frame_;
 
 };
 

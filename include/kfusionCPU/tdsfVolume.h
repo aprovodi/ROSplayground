@@ -22,12 +22,22 @@ class TsdfVolume
 public:
     typedef boost::shared_ptr<TsdfVolume> Ptr;
     typedef std::pair<float, float> TsdfCell;
-    typedef boost::multi_array<TsdfCell, 3> TsdfVolumeData;
+    typedef TsdfCell* iterator;
 
     /** \brief Constructor
      * \param[in] resolution volume resolution
      */
     TsdfVolume(const Eigen::Vector3i& resolution);
+
+    /** \brief Destructor */
+    ~TsdfVolume();
+
+    /** \brief Resets tsdf volume data to uninitialized state */
+    void reset();
+
+    /** \brief Iterators for the volume */
+    iterator begin();
+    iterator end();
 
     /** \brief Sets Tsdf volume size for each dimention
      * \param[in] size size of tsdf volume in meters
@@ -40,34 +50,38 @@ public:
     void setPositiveTsdfTruncDist(float distance);
     void setNegativeTsdfTruncDist(float distance);
 
-    /** \brief Returns tsdf volume container */
-    const TsdfVolumeData& data() const;
-
     /** \brief Returns volume size in meters */
     const Eigen::Vector3f& getSize() const;
-
-    float getPositiveTsdfTruncDist() const;
-    float getNegativeTsdfTruncDist() const;
 
     /** \brief Returns volume resolution */
     const Eigen::Vector3i& getResolution() const;
 
-    /** \brief Returns volume voxel size in meters */
-    const Eigen::Vector3f getVoxelSize() const;
+    float getPositiveTsdfTruncDist() const;
+    float getNegativeTsdfTruncDist() const;
 
-    /** \brief Integrates TSDF Volume
-     * \param[in] raw_depth_map
-     * \param[in] intr Camera Intrinsics
-     * \param[in] Rcam_inv Rotational part
-     * \param[in] tcam Translational part
+    /** \brief Returns volume voxel size in meters */
+    const Eigen::Vector3f& getVoxelSize() const;
+
+    /** \brief Returns tsdf value from a specific location */
+    float getTSDFValue(const Eigen::Vector3f& glocation);
+
+    /** \brief Returns gradient value from a specific location */
+    float getTSDFGradient(const Eigen::Vector3f& glocation, int stepSize, int dim);
+
+    /** \brief Tells if the gradient from a specific location is valid*/
+    bool validGradient(const Eigen::Vector3f& glocation);
+
+    /** \brief Integrates new data to the current volume
+     * \param[in] raw_depth_map Depth data to integrate
+     * \param[in] intr Camera intrinsics
+     * \param[in] camtoworld Camera transformations
      */
-    void integrate(const cv::Mat& raw_depth_map, const Intr& intr,
-                   const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>& Rcam_inv, const Eigen::Vector3f& tcam);
+    void integrate(const cv::Mat& raw_depth_map, const Intr& intr, const Eigen::Matrix4f& camtoworld);
 
 private:
 
     /** \brief tsdf volume data */
-    TsdfVolumeData tsdf_;
+    TsdfCell* tsdf_;
 
     /** \brief tsdf volume size in meters */
     Eigen::Vector3f size_;
@@ -84,6 +98,9 @@ private:
     /** \brief tsdf cell size */
     Eigen::Vector3f cell_size_;
 
+    /** \brief tsdf number of cell */
+    unsigned int num_cells_;
+
     /** \brief Calculates global coordinates of voxel
      * \param[in] x voxel coordinate
      * \param[in] y voxel coordinate
@@ -91,6 +108,14 @@ private:
      */
     Eigen::Vector3f getVoxelGCoo(int x, int y, int z) const;
 
+    /** \brief Returns cell from a specific location */
+    TsdfCell& operator[](const Eigen::Vector3i& position) const;
+
+    /** \brief Returns tsdf value from a specific location */
+    float v(int pi, int pj, int pk) const;
+
+    /** \brief Sets TsdfCell to a specific location */
+    void set(int px, int py, int pz, const TsdfCell& d);
 };
 }
 
