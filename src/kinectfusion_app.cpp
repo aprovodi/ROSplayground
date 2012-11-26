@@ -60,17 +60,18 @@ struct SceneCloudView
             {
                 for (int z = 0; z < 128; ++z)
                 {
-                    if (fabs(vol.getTSDFValue(Eigen::Vector3f(x * 3 / 128, y * 3 / 128, z * 3 / 128))) < 0.02)
+                    if (fabs(vol.v(x, y, z)) < 0.02)
                     {
                         cloud_ptr_->points.push_back(pcl::PointXYZ(x, y, z));
                     }
                 }
             }
         }
-        cloud_ptr_->width = (int)cloud_ptr_->points.size();
-        cloud_ptr_->height = 1;
+        //cloud_ptr_->width = (int)cloud_ptr_->points.size();
+        //cloud_ptr_->height = 1;
         cloud_viewer_.removeAllPointClouds();
         cloud_viewer_.addPointCloud<pcl::PointXYZ> (cloud_ptr_);
+        cloud_viewer_.spinOnce();
     }
 
     void clearClouds(bool print_message = false)
@@ -103,15 +104,15 @@ public:
         sub_ = nh_.subscribe("/camera/depth/image", 3, &kfusionCpuApp::process_image_callback, this);
 
         //Init Kfusion
-        Eigen::Vector3f volume_size = Eigen::Vector3f::Constant(vsz/*meters*/);
-        kfusionCPU_.volume().setSize(volume_size);
+        //Eigen::Vector3f volume_size = Eigen::Vector3f::Constant(vsz/*meters*/);
+        //kfusionCPU_.volume().setSize(volume_size);
 
-        Eigen::Matrix3f R = Eigen::Matrix3f::Identity(); // * AngleAxisf( pcl::deg2rad(-30.f), Vector3f::UnitX());
-        Eigen::Vector3f t = volume_size * 0.5f - Eigen::Vector3f(0, 0, volume_size(2) / 2 * 1.2f);
+        //Eigen::Matrix3f R = Eigen::Matrix3f::Identity(); // * AngleAxisf( pcl::deg2rad(-30.f), Vector3f::UnitX());
+        //Eigen::Vector3f t = volume_size * 0.5f - Eigen::Vector3f(0, 0, volume_size(2) / 2 * 1.2f);
 
-        Eigen::Affine3f pose = Eigen::Translation3f(t) * Eigen::AngleAxisf(R);
+        //Eigen::Affine3f pose = Eigen::Translation3f(t) * Eigen::AngleAxisf(R);
 
-        kfusionCPU_.setInitalCameraPose(pose);
+        //kfusionCPU_.setInitalCameraPose(pose);
     }
 
     ~kfusionCpuApp()
@@ -137,6 +138,7 @@ public:
         // 1. Convert the ROS image into an OpenCV image
         ROS_DEBUG("Converting ROS image to OpenCV image...");
         cv_bridge::CvImagePtr raw_depth_map = cv_bridge::toCvCopy(msg, msg->encoding);
+        //raw_depth_map->image.convertTo(raw_depth_map->image, CV_32FC1);
         ROS_DEBUG("Done!");
 
         // 1. Run KinectFusion on the image.
@@ -158,7 +160,6 @@ public:
         image_view_.showGeneratedDepth(kfusionCPU_);
 
         scene_cloud_view_.show(kfusionCPU_);
-        scene_cloud_view_.cloud_viewer_.spinOnce(3);
     }
 
     ros::NodeHandle nh_;
@@ -175,11 +176,13 @@ public:
 
 int main(int argc, char** argv)
 {
+    //ros::Rate r(10);
     ROS_INFO("Initialising...");
     ros::init(argc, argv, "kinectfusion_app");
     ROS_INFO("Ready!");
     float volume_size = 3.f;
     kfusionCpuApp app(volume_size);
     ros::spin();
+    //r.sleep();
 }
 

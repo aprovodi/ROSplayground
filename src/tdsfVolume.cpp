@@ -1,37 +1,46 @@
-#include "kfusionCPU/tdsfVolume.h"
-#include "kfusionCPU/kfusionCPU.h"
+#include "kfusionCPU/tsdfVolume.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cvpr_tum::TsdfVolume::TsdfVolume(const Eigen::Vector3i& resolution) :
-    resolution_(resolution)
+    resolution_(resolution), num_columns_(resolution(0)), num_rows_(resolution(1)), num_slices_(resolution(2))
 {
+    std::cout << "TSDF VOLUME CONSTRUCTOR WAS CALLED" << std::endl;
+
     const Eigen::Vector3f default_volume_size = Eigen::Vector3f::Constant(3.f); //meters
     const float default_pos_tranc_dist = 0.1f; //meters
-    const float default_neg_tranc_dist = -0.03f; //meters
+    const float default_neg_tranc_dist = -0.04f; //meters
 
     setSize(default_volume_size);
-
-    cell_size_ = size_.array() / resolution_.array().cast<float> ();
 
     setPositiveTsdfTruncDist(default_pos_tranc_dist);
     setNegativeTsdfTruncDist(default_neg_tranc_dist);
 
-    num_cells_ = resolution_(0) * resolution_(1) * resolution_(2);
+    num_cells_ = num_columns_ * num_rows_ * num_slices_;
 
-    tsdf_ = new TsdfCell[num_cells_];
+    tsdf_ = new float[num_cells_];
+    weights_ = new float[num_cells_];
+    reset();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cvpr_tum::TsdfVolume::~TsdfVolume()
 {
-     //delete[] tsdf_;
-     tsdf_ = NULL;
+    std::cout << "TSDF VOLUME DESTRUCTOR WAS CALLED" << std::endl;
+}
+
+void cvpr_tum::TsdfVolume::release()
+{
+    delete[] tsdf_;
+    tsdf_ = NULL;
+    delete[] weights_;
+    weights_ = NULL;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cvpr_tum::TsdfVolume::reset()
 {
-    std::fill(begin(), end(), TsdfCell(pos_tranc_dist_, 0));
+    std::fill(tsdf_, tsdf_ + num_cells_, pos_tranc_dist_);
+    std::fill(weights_, weights_ + num_cells_, 0.f);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -49,7 +58,8 @@ cvpr_tum::TsdfVolume::iterator cvpr_tum::TsdfVolume::end()
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cvpr_tum::TsdfVolume::setSize(const Eigen::Vector3f& size)
 {
-    size_ = size;
+    world_size_ = size;
+    cell_size_ = world_size_.array() / resolution_.array().cast<float> ();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -72,7 +82,7 @@ void cvpr_tum::TsdfVolume::setNegativeTsdfTruncDist(float distance)
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 const Eigen::Vector3f& cvpr_tum::TsdfVolume::getSize() const
 {
-    return size_;
+    return world_size_;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -100,125 +110,144 @@ const Eigen::Vector3f& cvpr_tum::TsdfVolume::getVoxelSize() const
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-float cvpr_tum::TsdfVolume::getTSDFValue(const Eigen::Vector3f& glocation)
+float cvpr_tum::TsdfVolume::getInterpolatedTSDFValue(const Eigen::Vector3f& glocation)
 {
     if (std::isnan(glocation(0) + glocation(1) + glocation(2)))
         return pos_tranc_dist_;
 
-    double i, j, k;
-    float x = modf(glocation(0) / cell_size_(0) + resolution_(0) / 2.f, &i);
-    float y = modf(glocation(1) / cell_size_(1) + resolution_(1) / 2.f, &j);
-    float z = modf(glocation(2) / cell_size_(2) + resolution_(2) / 2.f, &k);
+    float glocation_scaled_x = glocation(0) / cell_size_(0) + resolution_(0) / 2.f;
+    float glocation_scaled_y = glocation(1) / cell_size_(1) + resolution_(1) / 2.f;
+    float glocation_scaled_z = glocation(2) / cell_size_(2) + resolution_(2) / 2.f;
 
-    if (i >= resolution_(0) - 1 || j >= resolution_(1) - 1 || k >= resolution_(2) - 1 || i < 0 || j < 0 || k < 0)
+    unsigned int I = floorf(glocation_scaled_x); // round to negative infinity // or we could use int()?
+    unsigned int J = floorf(glocation_scaled_y);
+    unsigned int K = floorf(glocation_scaled_z);
+
+    if (I >= num_columns_ - 1 || J >= num_rows_ - 1 || K >= num_slices_ - 1)
         return pos_tranc_dist_;
 
-    int I = int(i);
-    int J = int(j);
-    int K = int(k);
+    float xd = glocation_scaled_x - I;
+    float yd = glocation_scaled_y - J;
+    float zd = glocation_scaled_z - K;
 
-    float a1 = v(I, J, K) * (1 - z) + v(I, J, K + 1) * z;
-    float a2 = v(I, J + 1, K) * (1 - z) + v(I, J + 1, K + 1) * z;
-    float b1 = v(I + 1, J, K) * (1 - z) + v(I + 1, J, K + 1) * z;
-    float b2 = v(I + 1, J + 1, K) * (1 - z) + v(I + 1, J + 1, K + 1) * z;
+    unsigned int N1 = (I + 0) * num_rows_ * num_slices_ + (J + 0) * num_slices_ + K;
+    unsigned int N2 = (I + 0) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + K;
+    unsigned int N3 = (I + 1) * num_rows_ * num_slices_ + (J + 0) * num_slices_ + K;
+    unsigned int N4 = (I + 1) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + K;
 
-    return (a1 * (1 - y) + a2 * y) * (1 - x) + (b1 * (1 - y) + b2 * y) * x;
+    float c00 = tsdf_[N1] * (1 - zd) + tsdf_[N1 + 1] * zd;
+    float c10 = tsdf_[N2] * (1 - zd) + tsdf_[N2 + 1] * zd;
+    float c01 = tsdf_[N3] * (1 - zd) + tsdf_[N3 + 1] * zd;
+    float c11 = tsdf_[N4] * (1 - zd) + tsdf_[N4 + 1] * zd;
+
+    float c0 = c00 * (1 - yd) + c10 * yd;
+    float c1 = c01 * (1 - yd) + c11 * yd;
+
+    float c = c0 * (1 - xd) + c1 * xd;
+    return c;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-float cvpr_tum::TsdfVolume::getTSDFGradient(const Eigen::Vector3f& glocation, int stepSize, int dim)
+Eigen::Matrix<float, 1, 3> cvpr_tum::TsdfVolume::getTSDFGradient(const Eigen::Vector3f& glocation)
 {
-    float delta = cell_size_(dim) * stepSize;
-    Eigen::Vector3f location_offset = Eigen::Vector3f::Zero();
-    location_offset(dim) = delta;
+    Eigen::Vector3f tmp = Eigen::Vector3f::Zero();
+    int stepSize = 1;
+    Eigen::Matrix<float, 1, 3> gradientVector;
 
-    return ((getTSDFValue(glocation + location_offset)) - (getTSDFValue(glocation - location_offset))) / (2.0 * delta);
+    float delta = cell_size_(0) * stepSize;
+    tmp = glocation;
+    tmp(0) += delta;
+    float Fx1 = getInterpolatedTSDFValue(tmp);
+
+    tmp = glocation;
+    tmp(0) -= delta;
+    float Fx2 = getInterpolatedTSDFValue(tmp);
+
+    gradientVector(0) = (Fx1 - Fx2) / (2.f * delta);
+
+    delta = cell_size_(1) * stepSize;
+    tmp = glocation;
+    tmp(1) += delta;
+    float Fy1 = getInterpolatedTSDFValue(tmp);
+
+    tmp = glocation;
+    tmp(1) -= delta;
+    float Fy2 = getInterpolatedTSDFValue(tmp);
+
+    gradientVector(1) = (Fy1 - Fy2) / (2.f * delta);
+
+    delta = cell_size_(2) * stepSize;
+    tmp = glocation;
+    tmp(2) += delta;
+    float Fz1 = getInterpolatedTSDFValue(tmp);
+
+    tmp = glocation;
+    tmp(2) -= delta;
+    float Fz2 = getInterpolatedTSDFValue(tmp);
+
+    gradientVector(2) = (Fz1 - Fz2) / (2.f * delta);
+
+    return gradientVector;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cvpr_tum::TsdfVolume::integrate(const cv::Mat& raw_depth_map, const Intr& intr, const Eigen::Matrix4f& camtoworld)
+void cvpr_tum::TsdfVolume::integrate(const cv::Mat& raw_depth_map, const Intr& intr, const Eigen::Matrix3f& Rcam_inv, const Eigen::Vector3f& tcam)
 {
-    std::cout << resolution_(0) << " " << resolution_(1) << " " << resolution_(2) << std::endl;
-    for (int x = 0; x < resolution_(0); ++x)
+    for (unsigned int x = 0; x < num_columns_; ++x)
     {
-        for (int y = 0; y < resolution_(1); ++y)
+        for (unsigned int y = 0; y < num_rows_; ++y)
         {
-            for (int z = 0; z < resolution_(2); ++z)
+            for (unsigned int z = 0; z < num_slices_; ++z)
             {
+                unsigned int idx_curr = x * num_rows_ * num_slices_ + y * num_slices_ + z;
+
                 Eigen::Vector3f v_g(getVoxelGCoo(x, y, z));
 
                 //tranform to cam coo space
-                Eigen::Vector4f tmp;
-                tmp << v_g(0), v_g(1), v_g(2), 1.f;
-                Eigen::Vector4f v_new = camtoworld * tmp;
-                Eigen::Vector3f v(v_new(0), v_new(1), v_new(2));
+                Eigen::Vector3f v = Rcam_inv * (v_g - tcam);
 
-                Eigen::Vector4f camera = camtoworld * Eigen::Vector4f(0.0, 0.0, 0.0, 1.0);
-
-                if (v(2) - camera(2) < 0)
+                if (v(2) - tcam(2) < 0)
                     continue;
 
-                cv::Point2d coo(0, 0); //project to current cam
-                coo.x = v(0) * intr.fx / v(2) + intr.cx;
-                coo.y = v(1) * intr.fy / v(2) + intr.cy;
+                //project to current cam
+                int coo_x = floorf(v(0) * intr.fx / v(2) + intr.cx);
+                int coo_y = floorf(v(1) * intr.fy / v(2) + intr.cy);
 
-                if (v(2) > 0 && coo.x >= 0 && coo.y >= 0 && coo.x < raw_depth_map.cols && coo.y < raw_depth_map.rows
-                        && !std::isnan(v(2)))
+                if (coo_x > 0 && coo_y > 0 && coo_x < raw_depth_map.cols - 1 && coo_y < raw_depth_map.rows - 1)
                 {
-                    float Dp = raw_depth_map.at<float> (coo.y, coo.x);
+                    float Dp = raw_depth_map.at<float> (coo_y, coo_x);
 
-                    const float W = 1 / ((1 + Dp) * (1 + Dp));
-
-                    float Eta(Dp - v(2));
-
-                    if (Eta >= neg_tranc_dist_)// && Eta<Dmax)
+                    if (Dp != 0)
                     {
+                        const float W = 1 / ((1 + Dp) * (1 + Dp));
 
-                        float D = fmin(Eta, pos_tranc_dist_);//*copysign(1.0,Eta);*perpendicular
+                        float Eta(Dp - v(2));
 
-                        Eigen::Vector3i pos(x, y, z);
-                        TsdfCell data = operator[](pos);
-                        float tsdf_prev = data.first;
-                        float weight_prev = data.second;
+                        if (Eta >= neg_tranc_dist_)// && Eta < pos_tranc_dist_)
+                        {
 
-                        float tsdf_new = (tsdf_prev * weight_prev + D * W) / (weight_prev + W);
-                        float weight_new = fmin(weight_prev + W, MAX_WEIGHT);
+                            float D = fmin(Eta, pos_tranc_dist_);//*copysign(1.0,Eta);*perpendicular
 
-                        set(x, y, z, TsdfCell(tsdf_new, weight_new));
+                            float tsdf_prev = tsdf_[idx_curr];
+                            float weight_prev = weights_[idx_curr];
+
+                            float tsdf_new = (tsdf_prev * weight_prev + D * W) / (weight_prev + W);
+                            float weight_new = fmin(weight_prev + W, MAX_WEIGHT);
+
+                            tsdf_[idx_curr] = tsdf_new;
+                            weights_[idx_curr] = weight_new;
+                        }
                     }
-                    /*
-                     if (Dp != 0)
-                     {
-                     float xl = (coo.x - intr.cx) / intr.fx;
-                     float yl = (coo.y - intr.cy) / intr.fy;
-                     float lambda_inv = sqrtf(xl * xl + yl * yl + 1);
-
-                     Eigen::Vector3f diff = tcam - v_g;
-                     float sdf = diff.norm() * lambda_inv - Dp;
-
-                     sdf *= (-1);
-
-                     if (sdf >= neg_tranc_dist_)
-                     {
-                     float tsdf = fmin(1, sdf / pos_tranc_dist_);
-
-                     int weight_prev = tsdf_[x][y][z].first;
-                     float tsdf_prev = tsdf_[x][y][z].second;
-
-                     const int Wrk = 1;
-
-                     float tsdf_new = (tsdf_prev * weight_prev + Wrk * tsdf) / (weight_prev + Wrk);
-                     int weight_new = fmin(weight_prev + Wrk, MAX_WEIGHT);
-
-                     tsdf_[x][y][z].first = tsdf_new;
-                     tsdf_[x][y][z].second = weight_new;
-                     }
-                     }
-                     */
                 }//within camera view
             }//z
         }//y
     }//x
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+float cvpr_tum::TsdfVolume::v(int pos_x, int pos_y, int pos_z) const
+{
+    return tsdf_[pos_z * num_rows_ * num_slices_ + pos_y * num_columns_ + pos_x];
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -291,33 +320,16 @@ bool cvpr_tum::TsdfVolume::validGradient(const Eigen::Vector3f& glocation)
     else
         return true;
 }
-;
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-cvpr_tum::TsdfVolume::TsdfCell& cvpr_tum::TsdfVolume::operator[](const Eigen::Vector3i& p) const
-{
-    if (p(0) >= resolution_(0) - 1 || p(1) >= resolution_(1) - 1 || p(2) >= resolution_(2) - 1 || p(0) < 0 || p(1) < 0 || p(2) < 0)
-        return tsdf_[0];
-    else return tsdf_[p(0) + p(1) * resolution_(0) + p(2) * resolution_(1) * resolution_(2)];
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-float cvpr_tum::TsdfVolume::v(int pos_i, int pos_j, int pos_k) const
-{
-    return tsdf_[pos_i + pos_j * resolution_(0) + pos_k * resolution_(1) * resolution_(2)].first;
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cvpr_tum::TsdfVolume::set(int px, int py, int pz, const TsdfCell& d)
-{
-    tsdf_[px + py * resolution_(0) + pz * resolution_(0) * resolution_(1)] = d;
-}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 Eigen::Vector3f cvpr_tum::TsdfVolume::getVoxelGCoo(int x, int y, int z) const
 {
-    Eigen::Vector3f coo((float)x, (float)y, (float)z);
-    coo.array() -= resolution_.array().cast<float> () / 2.f; //shift to the center;
-    coo.array() *= cell_size_.array();
-    return coo;
+    //Eigen::Vector3f coo((float)x, (float)y, (float)z);
+    float ray_x = (x - resolution_(0) / 2) * cell_size_(0);
+    float ray_y = (y - resolution_(1) / 2) * cell_size_(1);
+    float ray_z = (z - resolution_(2) / 2) * cell_size_(2);
+    //coo.array() -= resolution_.array().cast<float> () / 2.f; //shift to the center;
+    //coo.array() *= cell_size_.array();
+    //return coo;
+    return Eigen::Vector3f(ray_x, ray_y, ray_z);
 }

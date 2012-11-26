@@ -1,42 +1,25 @@
 #include "kfusionCPU/kfusionCPU.h"
-#include <Eigen/Core>
 #include <Eigen/StdVector>
 #include <unsupported/Eigen/MatrixFunctions>
 
-namespace cvpr_tum
-{
-template<typename T>
-    bool is_nan(const T &value)
-    {
-        // True if NAN
-        return value != value;
-    }
-
-Eigen::Matrix4f Twist(const kfusionCPU::Vector6f& xi)
-{
-    Eigen::Matrix4f M;
-
-    M << 0.0, -xi(2), xi(1), xi(3), xi(2), 0.0, -xi(0), xi(4), -xi(1), xi(0), 0.0, xi(5), 0.0, 0.0, 0.0, 0.0;
-
-    return M;
-}
-}
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cvpr_tum::kfusionCPU::kfusionCPU(int rows, int cols) :
     rows_(rows), cols_(cols), global_time_(0), integration_metric_threshold_(0.f), robust_statistic_coefficient_(0.02f)
 {
+    std::cout << "KFUSION CONSTRUCTOR WAS CALLED" << std::cout;
+
     const Vector3f volume_size = Vector3f::Constant(VOLUME_SIZE);
     const Eigen::Vector3i volume_resolution(VOLUME_X, VOLUME_Y, VOLUME_Z);
 
-    tsdf_volume_ = TsdfVolume::Ptr(new TsdfVolume(volume_resolution));
+    tsdf_volume_ = TsdfVolume::TsdfVolumePtr(new TsdfVolume(volume_resolution));
     tsdf_volume_->setSize(volume_size);
 
-    setDepthIntrinsics(520.f, 520.f, 319.5, 239.5); // default values, can be overwritten
+    setDepthIntrinsics(520.f, 520.f, 319.5f, 239.5f); // default values, can be overwritten
 
     init_Rcam_ = Eigen::Matrix3f::Identity();// * AngleAxisf(-30.f/180*3.1415926, Vector3f::UnitX());
     init_tcam_ = Eigen::Vector3f::Zero();//volume_size * 0.5f - Vector3f(0, 0, volume_size(2) / 2 * 1.2f);
 
-    const int iters[] = {10, 5, 4};
+    const int iters[] = {2, 4, 8};
     std::copy(iters, iters + LEVELS, icp_iterations_);
 
     allocateMaps(rows_, cols_);
@@ -49,6 +32,12 @@ cvpr_tum::kfusionCPU::kfusionCPU(int rows, int cols) :
     Transformation_ = Eigen::MatrixXf::Identity(4, 4);
 
     reset();
+}
+
+cvpr_tum::kfusionCPU::~kfusionCPU()
+{
+    std::cout << "KFUSION DESTRUCTOR WAS CALLED" << std::cout;
+    tsdf_volume_->release();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -114,106 +103,17 @@ bool cvpr_tum::kfusionCPU::operator()(const DepthMap& raw_depth)
         for (size_t i = 1; i < LEVELS; i++)
             cv::pyrDown(depth_pyramid_[i - 1], depth_pyramid_[i]);
 
-        // 4. Compute vertex & normal pyramid.
+        // 4. Compute vertex pyramid.
         for (size_t i = 0; i < LEVELS; i++)
-        {
-            // 4.1 Populate the vertex map for the current level.
             create_vertex_map(intr(i), depth_pyramid_[i], vertex_pyramid_[i]);
-
-            // 4.2 Populate the normal map for the current level.
-            create_normal_map(vertex_pyramid_[i], normal_pyramid_[i]);
-        }
     }
 
-    // 5. ICP
     bool hasfused;
     if (!first_frame_)
     {
-        ScopeTime time("Camera Tracking ...");
+        ScopeTime time(">>> Camera Tracking");
         hasfused = true;
-
-        Vector6f xi;
-        xi << 0.0, 0.0, 0.0, 0.0, 0.0, 0.0; // + (Pose-previousPose)*0.1;
-        Vector6f xi_prev = xi;
-
-        std::cout << "Transformation" << Transformation_ << std::endl;
-
-        for (int level_index = LEVELS - 1; level_index >= 0; --level_index)
-        {
-            int iter_num = icp_iterations_[level_index];
-
-            VertexMap vmap_curr = vertex_pyramid_[level_index];
-
-            for (int iter = 0; iter < iter_num; ++iter)
-            {
-                Eigen::Matrix4f camToWorld = Twist(xi).exp() * Transformation_;
-
-                Eigen::Matrix<float, 6, 6> A = Eigen::Matrix<float, 6, 6>::Zero();
-                Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
-
-                ///////////////////////////
-                for (size_t i = 0; i < vmap_curr.shape()[0]; i++)
-                {
-                    for (size_t j = 0; j < vmap_curr[0].shape()[1]; j++)
-                    {
-                        //tranform to global coo space
-                        if (std::isnan(vmap_curr[i][j](2)) || vmap_curr[i][j](0) < 0.4)
-                            continue;
-                        Eigen::Vector4f tmp;
-                        tmp << vmap_curr[i][j](0), vmap_curr[i][j](1), vmap_curr[i][j](2), 1.f;
-                        Eigen::Vector4f v_g_new = camToWorld * tmp;
-                        Eigen::Vector3f v_g(v_g_new(0), v_g_new(1), v_g_new(2));
-
-                        //if(!tsdf_volume_->validGradient(v_g)) continue;
-
-                        float D = tsdf_volume_->getTSDFValue(v_g);
-                        if (fabs(D - tsdf_volume_->getPositiveTsdfTruncDist()) < std::numeric_limits<double>::epsilon()
-                                || fabs(D - tsdf_volume_->getNegativeTsdfTruncDist())
-                                        < std::numeric_limits<double>::epsilon())
-                            continue;
-
-                        //partial derivative of SDF wrt position
-                        Eigen::Matrix<float, 1, 3> dSDF_dx(tsdf_volume_->getTSDFGradient(v_g, 1, 0),
-                                                           tsdf_volume_->getTSDFGradient(v_g, 1, 1),
-                                                           tsdf_volume_->getTSDFGradient(v_g, 1, 2));
-                        //partial derivative of position wrt optimizaiton parameters
-                        Eigen::Matrix<float, 3, 6> dx_dxi;
-                        dx_dxi << 0, v_g(2), -v_g(1), 1, 0, 0, -v_g(2), 0, v_g(0), 0, 1, 0, v_g(1), -v_g(0), 0, 0, 0, 1;
-
-                        //jacobian = derivative of SDF wrt xi (chain rule)
-                        Eigen::Matrix<float, 1, 6> J = dSDF_dx * dx_dxi;
-
-                        const float c = robust_statistic_coefficient_ * tsdf_volume_->getPositiveTsdfTruncDist();
-                        float huber = fabs(D) < c ? 1.0 : c / fabs(D);
-
-                        //Gauss - Newton approximation to hessian
-                        A += huber * J.transpose() * J;
-                        b += huber * J.transpose() * D;
-
-                    }
-                }
-
-                ///////////////////////////
-
-                double scaling = 1 / A.maxCoeff();
-
-                b *= scaling;
-                A *= scaling;
-                const float regularization_ = 0.01;
-
-                A = A + (regularization_) * Eigen::MatrixXf::Identity(6, 6);
-                xi = xi - A.ldlt().solve(b);
-                Vector6f Change = xi - xi_prev;
-                double Cnorm = Change.norm();
-                xi_prev = xi;
-                if (Cnorm < 0.0001)
-                    break;
-            }
-        }
-
-        if (std::isnan(xi.sum()))
-            xi << 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
-        Pose_ = xi;
+        Pose_ = TrackCameraPose();
     }
     else
     {
@@ -222,7 +122,6 @@ bool cvpr_tum::kfusionCPU::operator()(const DepthMap& raw_depth)
     }
 
     Transformation_ = Twist(Pose_).exp() * Transformation_;
-
     transformations_.push_back(Transformation_);
 
     cumulative_pose_ += Pose_;
@@ -235,13 +134,95 @@ bool cvpr_tum::kfusionCPU::operator()(const DepthMap& raw_depth)
     cumulative_pose_ *= 0.0;
 
     {
+        Eigen::Matrix3f Rcam = Transformation_.topLeftCorner<3, 3> ();
+        Eigen::Matrix3f Rcam_inv = Rcam.inverse();
+        Eigen::Vector3f tcam = Transformation_.topRightCorner<3, 1> ();
         ScopeTime time(">>> Volume Integration");
-        Eigen::Matrix4f camToWorld = Transformation_.inverse();
-
-        tsdf_volume_->integrate(raw_depth_map_, intr, camToWorld);
+        tsdf_volume_->integrate(raw_depth_map_, intr, Rcam_inv, tcam);
     }
 
     return (true);
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+Eigen::Matrix<float,6,1> cvpr_tum::kfusionCPU::TrackCameraPose()
+{
+    Vector6f xi = Vector6f::Zero();
+    Vector6f xi_prev = xi;
+
+    std::cout << "Transformation" << Transformation_ << std::endl;
+
+    for (int level_index = LEVELS - 1; level_index >= 0; --level_index)
+    {
+        int iter_num = icp_iterations_[level_index];
+
+        VertexMap vmap_curr = vertex_pyramid_[level_index];
+
+        for (int iter = 0; iter < iter_num; ++iter)
+        {
+            Eigen::Matrix4f camToWorld = Twist(xi).exp() * Transformation_;
+            Eigen::Matrix3f Rcam = camToWorld.topLeftCorner<3, 3> ();
+            Eigen::Vector3f tcam = camToWorld.topRightCorner<3, 1> ();
+
+            Eigen::Matrix<float, 6, 6> A = Eigen::Matrix<float, 6, 6>::Zero();
+            Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
+
+            //for (size_t i = 0; i < vmap_curr.shape()[0]; i++)
+            //for (size_t j = 0; j < vmap_curr[0].shape()[1]; j++)
+            for (auto i = vmap_curr.origin(); i < (vmap_curr.origin() + vmap_curr.num_elements()); ++i)
+            {
+                Eigen::Vector3f v = *i;
+                //tranform to global coo space
+                if (std::isnan(v(2)))
+                    continue;
+
+                Eigen::Vector3f v_g = Rcam * v + tcam;
+
+                //if (!tsdf_volume_->validGradient(v_g))
+                //    continue;
+
+                float D = tsdf_volume_->getInterpolatedTSDFValue(v_g);
+                if (fabs(D - tsdf_volume_->getPositiveTsdfTruncDist()) < std::numeric_limits<double>::epsilon()
+                        || fabs(D - tsdf_volume_->getNegativeTsdfTruncDist())
+                                < std::numeric_limits<double>::epsilon())
+                    continue;
+
+                //partial derivative of SDF wrt position
+                Eigen::Matrix<float, 1, 3> dSDF_dx(tsdf_volume_->getTSDFGradient(v_g));
+                //partial derivative of position wrt optimizaiton parameters
+                Eigen::Matrix<float, 3, 6> dx_dxi;
+                dx_dxi << 0, v_g(2), -v_g(1), 1, 0, 0, -v_g(2), 0, v_g(0), 0, 1, 0, v_g(1), -v_g(0), 0, 0, 0, 1;
+
+                //jacobian = derivative of SDF wrt xi (chain rule)
+                Eigen::Matrix<float, 1, 6> J = dSDF_dx * dx_dxi;
+
+                const float c = robust_statistic_coefficient_ * tsdf_volume_->getPositiveTsdfTruncDist();
+                float huber = fabs(D) < c ? 1.0 : c / fabs(D);
+
+                //Gauss - Newton approximation to hessian
+                A += huber * J.transpose() * J;
+                b += huber * J.transpose() * D;
+
+            }//points
+            double scaling = 1 / A.maxCoeff();
+
+            b *= scaling;
+            A *= scaling;
+            const float regularization_ = 0.01;
+
+            A = A + (regularization_) * Eigen::MatrixXf::Identity(6, 6);
+            xi = xi - A.llt().solve(b).cast<float> ();
+            Vector6f Change = xi - xi_prev;
+            double Cnorm = Change.norm();
+            xi_prev = xi;
+            if (Cnorm < 0.0001)
+                break;
+        }//iterations
+    }//levels
+
+    if (is_nan(xi.sum()))
+        xi << 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
+    return xi;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -257,24 +238,21 @@ void cvpr_tum::kfusionCPU::create_vertex_map(const Intr& intr, const DepthMap& s
         for (size_t x = 0; x < width(src); x++)
         {
             // get the depth reading at this point
-            float z = src.at<float> (y, x); // convert mm --> m
+            float z = src.at<float> (y, x); // convert mm --> m if needed
 
             // if we have some depth reading...
-            //if (z != 0)
-            //{
-            dest[y][x](0) = z * (x - cx) / fx;
-            dest[y][x](1) = z * (y - cy) / fy;
-            dest[y][x](2) = z;
-            /*
-             }
-             else
-             {
-             //std::cout << "we got something NAN at" << x << " " << y << std::endl;
-             dest[y][x](0) = std::numeric_limits<float>::quiet_NaN();
-             dest[y][x](1) = std::numeric_limits<float>::quiet_NaN();
-             dest[y][x](2) = std::numeric_limits<float>::quiet_NaN();
-             }
-             */
+            if (z != 0)
+            {
+                dest[y][x](0) = z * (x - cx) / fx;
+                dest[y][x](1) = z * (y - cy) / fy;
+                dest[y][x](2) = z;
+            }
+            else
+            {
+                dest[y][x](0) = std::numeric_limits<float>::quiet_NaN();
+                dest[y][x](1) = std::numeric_limits<float>::quiet_NaN();
+                dest[y][x](2) = std::numeric_limits<float>::quiet_NaN();
+            }
         }
     }
 }
@@ -388,4 +366,12 @@ Eigen::Vector3f cvpr_tum::kfusionCPU::rodrigues2(const Eigen::Matrix3f& matrix)
         rz *= vth;
     }
     return Eigen::Vector3d(rx, ry, rz).cast<float> ();
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+Eigen::Matrix4f cvpr_tum::kfusionCPU::Twist(const Eigen::Matrix<float, 6, 1>& xi)
+{
+    Eigen::Matrix4f M;
+    M << 0.f, -xi(2), xi(1), xi(3), xi(2), 0.f, -xi(0), xi(4), -xi(1), xi(0), 0.f, xi(5), 0.f, 0.f, 0.f, 0.f;
+    return M;
 }
