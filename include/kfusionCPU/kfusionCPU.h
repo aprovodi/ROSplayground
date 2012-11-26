@@ -5,15 +5,15 @@
 #include <stddef.h> // for size_t
 #include <sys/types.h> // for uintX_t
 #include <opencv2/imgproc/imgproc.hpp> // for filtering
-#include <opencv2/contrib/contrib.hpp>
 #include <boost/array.hpp> // for depth/vertex/normal pyramids
 #include <boost/multi_array.hpp> // for vertex and normal maps
-#include "kfusionCPU/tdsfVolume.h"
 #include <Eigen/Core>
-#include <Eigen/Geometry>
+#include "kfusionCPU/tsdfVolume.h"
 
 namespace cvpr_tum
 {
+class TsdfVolume;
+
 class point_3d
 {
 public:
@@ -72,34 +72,6 @@ public:
     }
 };
 
-/** \brief Camera intrinsics structure
- */
-class Intr
-{
-public:
-    float fx, fy, cx, cy;
-    Intr()
-    {
-    }
-    Intr(float fx_, float fy_, float cx_, float cy_) :
-        fx(fx_), fy(fy_), cx(cx_), cy(cy_)
-    {
-    }
-
-    Intr operator()(int level_index) const
-    {
-        int div = 1 << level_index;
-        return (Intr(fx / div, fy / div, cx / div, cy / div));
-    }
-
-    friend inline std::ostream&
-    operator <<(std::ostream& os, const Intr& intr)
-    {
-        os << "([f = " << intr.fx << ", " << intr.fy << "] [cp = " << intr.cx << ", " << intr.cy << "])";
-        return (os);
-    }
-};
-
 /**
  * An implementation of the KinectFusion algorithm for transforming the Kinect
  * depth input into a point cloud.
@@ -138,6 +110,7 @@ public:
      * image using the kinect fusion algorithm.
      */
     kfusionCPU(int rows = 480, int cols = 640);
+    ~kfusionCPU();
 
     /** \brief Sets Depth camera intrinsics
      * \param[in] fx focal length x
@@ -205,7 +178,7 @@ private:
     float fx_, fy_, cx_, cy_;
 
     /** \brief Tsdf volume container. */
-    TsdfVolume::Ptr tsdf_volume_;
+    TsdfVolume::TsdfVolumePtr tsdf_volume_;
 
     /** \brief Initial camera rotation in volume coo space. */
     Matrix3frm init_Rcam_;
@@ -213,8 +186,14 @@ private:
     /** \brief Initial camera position in volume coo space. */
     Vector3f init_tcam_;
 
-    /** \brief Transformation composed of Rcam and tcam. */
-    Eigen::Matrix4d transformation_;
+    /** \brief Transformation composed of the camera. */
+    Eigen::Matrix4f Transformation_;
+
+    Vector6f Pose_;
+    Vector6f cumulative_pose_;
+
+    /** \brief Check if we've just started. */
+    bool first_frame_;
 
     /** \brief array with IPC iteration numbers for each pyramid level */
     int icp_iterations_[LEVELS];
@@ -304,32 +283,12 @@ private:
         return width(map);
     }
 
-    Vector6f EstimatePose(void);
+    Eigen::Matrix4f Twist(const Eigen::Matrix<float, 6, 1>& xi);
+
+    Vector6f TrackCameraPose(void);
     std::vector<Eigen::Matrix4f,Eigen::aligned_allocator<Eigen::Matrix4f> > transformations_;
-    Eigen::Matrix4f Transformation_;
-    Vector6f Pose_;
-    Vector6f cumulative_pose_;
-    bool first_frame_;
+    Eigen::Vector4f To3D(int row, int column, float depth, const Intr& intr);
 
-};
-
-/******************\
- * HELPER METHODS *
- ******************/
-struct ScopeTime
-{
-    const char* name;
-    cv::TickMeter tm;
-    ScopeTime(const char *name_) :
-        name(name_)
-    {
-        tm.start();
-    }
-    ~ScopeTime()
-    {
-        tm.stop();
-        std::cout << "Time(" << name << ") = " << tm.getTimeMilli() << "ms" << std::endl;
-    }
 };
 }
 #endif /* __KFUSIONCPU_H__ */
