@@ -11,8 +11,6 @@
 
 namespace cvpr_tum
 {
-//class Intr;
-
 class TsdfVolume
 {
     enum Weights
@@ -24,14 +22,17 @@ public:
     typedef float* iterator;
 
     /** \brief Constructor
-     * \param[in] resolution volume resolution
+     * \param[in] resolution volume resolution (number of voxels)
      */
     TsdfVolume(const Eigen::Vector3i& resolution);
 
     /** \brief Destructor */
     ~TsdfVolume();
 
-    /** \brief Resets tsdf volume data to uninitialized state */
+    /** \brief release volume data manually */
+    void release();
+
+    /** \brief Sets tsdf volume data to initial state */
     void reset();
 
     /** \brief Iterators for the volume */
@@ -40,12 +41,12 @@ public:
 
     /** \brief Sets Tsdf volume size for each dimention
      * \param[in] size size of tsdf volume in meters
-     */
+     * */
     void setSize(const Eigen::Vector3f& size);
 
     /** \brief Sets Tsdf truncation distance. Must be greater than 2 * volume_voxel_size
      * \param[in] distance TSDF truncation distance
-     */
+     * */
     void setPositiveTsdfTruncDist(float distance);
     void setNegativeTsdfTruncDist(float distance);
 
@@ -64,23 +65,28 @@ public:
     /** \brief Returns tsdf value from a specific location */
     float getInterpolatedTSDFValue(const Eigen::Vector3f& glocation);
 
-    /** \brief Returns gradient value from a specific location */
+    /** \brief Returns gradient value from a specific location
+     * \param[in] glocation world coo of the point
+     * */
     Eigen::Matrix<float, 1, 3> getTSDFGradient(const Eigen::Vector3f& glocation);
-
-    /** \brief Tells if the gradient from a specific location is valid*/
-    bool validGradient(const Eigen::Vector3f& glocation);
 
     /** \brief Integrates new data to the current volume
      * \param[in] raw_depth_map Depth data to integrate
      * \param[in] intr Camera intrinsics
      * \param[in] camtoworld Camera transformations
-     */
-    void integrate(const cv::Mat& raw_depth_map, const Intr& intr, const Eigen::Matrix3f& Rcam_inv, const Eigen::Vector3f& tcam);
+     * */
+    void integrate(const cv::Mat& raw_depth_map, const Intr& intr, const Eigen::Matrix3f& Rcam_inv,
+                   const Eigen::Vector3f& tcam);
 
-    /** \brief Returns tsdf value from a specific location */
+    /** \brief Returns tsdf value from a specific location
+     * \param[in] pi ith voxel coordinate in a grid
+     * \param[in] pj jth voxel coordinate in a grid
+     * \param[in] pk kth voxel coordinate in a grid
+     * */
     float v(int pi, int pj, int pk) const;
 
-    void release();
+    /** \brief Tells if the gradient from a specific location is valid*/
+    bool validGradient(const Eigen::Vector3f& glocation);
 
 private:
 
@@ -111,9 +117,9 @@ private:
     unsigned int num_slices_;
 
     /** \brief Calculates global coordinates of voxel
-     * \param[in] x voxel coordinate
-     * \param[in] y voxel coordinate
-     * \param[in] z voxel coordinate
+     * \param[in] x voxel coordinate in a grid
+     * \param[in] y voxel coordinate in a grid
+     * \param[in] z voxel coordinate in a grid
      */
     Eigen::Vector3f getVoxelGCoo(int x, int y, int z) const;
 

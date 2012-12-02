@@ -130,20 +130,20 @@ float cvpr_tum::TsdfVolume::getInterpolatedTSDFValue(const Eigen::Vector3f& gloc
     float yd = glocation_scaled_y - J;
     float zd = glocation_scaled_z - K;
 
-    unsigned int N1 = (I + 0) * num_rows_ * num_slices_ + (J + 0) * num_slices_ + K;
-    unsigned int N2 = (I + 0) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + K;
-    unsigned int N3 = (I + 1) * num_rows_ * num_slices_ + (J + 0) * num_slices_ + K;
-    unsigned int N4 = (I + 1) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + K;
+    unsigned int Z1 = (K + 0) * num_rows_ * num_slices_ + (J + 0) * num_slices_ + I;
+    unsigned int Z2 = (K + 0) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + I;
+    unsigned int Z3 = (K + 1) * num_rows_ * num_slices_ + (J + 0) * num_slices_ + I;
+    unsigned int Z4 = (K + 1) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + I;
 
-    float c00 = tsdf_[N1] * (1 - zd) + tsdf_[N1 + 1] * zd;
-    float c10 = tsdf_[N2] * (1 - zd) + tsdf_[N2 + 1] * zd;
-    float c01 = tsdf_[N3] * (1 - zd) + tsdf_[N3 + 1] * zd;
-    float c11 = tsdf_[N4] * (1 - zd) + tsdf_[N4 + 1] * zd;
+    float c00 = tsdf_[Z1] * (1 - xd) + tsdf_[Z1 + 1] * xd;
+    float c10 = tsdf_[Z2] * (1 - xd) + tsdf_[Z2 + 1] * xd;
+    float c01 = tsdf_[Z3] * (1 - xd) + tsdf_[Z3 + 1] * xd;
+    float c11 = tsdf_[Z4] * (1 - xd) + tsdf_[Z4 + 1] * xd;
 
     float c0 = c00 * (1 - yd) + c10 * yd;
     float c1 = c01 * (1 - yd) + c11 * yd;
 
-    float c = c0 * (1 - xd) + c1 * xd;
+    float c = c0 * (1 - zd) + c1 * zd;
     return c;
 }
 
@@ -191,7 +191,8 @@ Eigen::Matrix<float, 1, 3> cvpr_tum::TsdfVolume::getTSDFGradient(const Eigen::Ve
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cvpr_tum::TsdfVolume::integrate(const cv::Mat& raw_depth_map, const Intr& intr, const Eigen::Matrix3f& Rcam_inv, const Eigen::Vector3f& tcam)
+void cvpr_tum::TsdfVolume::integrate(const cv::Mat& raw_depth_map, const Intr& intr, const Eigen::Matrix3f& Rcam_inv,
+                                     const Eigen::Vector3f& tcam)
 {
     for (unsigned int x = 0; x < num_columns_; ++x)
     {
@@ -201,7 +202,7 @@ void cvpr_tum::TsdfVolume::integrate(const cv::Mat& raw_depth_map, const Intr& i
             {
                 unsigned int idx_curr = x * num_rows_ * num_slices_ + y * num_slices_ + z;
 
-                Eigen::Vector3f v_g(getVoxelGCoo(x, y, z));
+                Eigen::Vector3f v_g(getVoxelGCoo(z, y, x));
 
                 //tranform to cam coo space
                 Eigen::Vector3f v = Rcam_inv * (v_g - tcam);
@@ -215,21 +216,21 @@ void cvpr_tum::TsdfVolume::integrate(const cv::Mat& raw_depth_map, const Intr& i
 
                 if (coo_x > 0 && coo_y > 0 && coo_x < raw_depth_map.cols - 1 && coo_y < raw_depth_map.rows - 1)
                 {
-                    float Dp = raw_depth_map.at<float> (coo_y, coo_x);
+                    float Dp = raw_depth_map.at<float>(coo_y, coo_x);
 
-                    if (Dp != 0)
+                    if (Dp != 0) //check validity here
                     {
-                        const float W = 1 / ((1 + Dp) * (1 + Dp));
-
                         float Eta(Dp - v(2));
 
-                        if (Eta >= neg_tranc_dist_)// && Eta < pos_tranc_dist_)
+                        if (Eta >= neg_tranc_dist_)
                         {
 
-                            float D = fmin(Eta, pos_tranc_dist_);//*copysign(1.0,Eta);*perpendicular
+                            float D = fmin(Eta, pos_tranc_dist_);
 
                             float tsdf_prev = tsdf_[idx_curr];
                             float weight_prev = weights_[idx_curr];
+
+                            const float W = 1 / ((1 + Dp) * (1 + Dp));
 
                             float tsdf_new = (tsdf_prev * weight_prev + D * W) / (weight_prev + W);
                             float weight_new = fmin(weight_prev + W, MAX_WEIGHT);
@@ -245,9 +246,22 @@ void cvpr_tum::TsdfVolume::integrate(const cv::Mat& raw_depth_map, const Intr& i
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+Eigen::Vector3f cvpr_tum::TsdfVolume::getVoxelGCoo(int x, int y, int z) const
+{
+    //Eigen::Vector3f coo((float)x, (float)y, (float)z);
+    float ray_x = (x - resolution_(0) / 2) * cell_size_(0);
+    float ray_y = (y - resolution_(1) / 2) * cell_size_(1);
+    float ray_z = (z - resolution_(2) / 2) * cell_size_(2);
+    //coo.array() -= resolution_.array().cast<float> () / 2.f; //shift to the center;
+    //coo.array() *= cell_size_.array();
+    //return coo;
+    return Eigen::Vector3f(ray_x, ray_y, ray_z);
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 float cvpr_tum::TsdfVolume::v(int pos_x, int pos_y, int pos_z) const
 {
-    return tsdf_[pos_z * num_rows_ * num_slices_ + pos_y * num_columns_ + pos_x];
+    return tsdf_[pos_x * num_rows_ * num_slices_ + pos_y * num_columns_ + pos_z];
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -265,71 +279,68 @@ bool cvpr_tum::TsdfVolume::validGradient(const Eigen::Vector3f& glocation)
      values that would contribute to the final  gradient.
      If any of these have a weight equal to zero, the result
      is false.
-     X--------X
-     /        / |
-     X--------X   ----X
-     |        |   | / |
-     X----        |   X-------X
-     /     |        | /       / |
-     X-------X--------X-------X   |
-     |     /        / |       |   |
-     |   X--------X   |       |   |
-     J    |   |        |   |       | /
-     ^    X----        |   X-------X
-     |        |        | / |  |
-     --->I   X--------X   |  X
-     /             |        | /
-     v              X--------X
-     K                                                */
-
-    double i, j, k;
-    modf(glocation(0) / cell_size_(0), &i);
-    modf(glocation(1) / cell_size_(1), &j);
-    modf(glocation(2) / cell_size_(2), &k);
-
-    if (std::isnan(i) || std::isnan(j) || std::isnan(k))
+                   X--------X
+                 /        / |
+               X--------X   ----X
+               |        |   | / |
+           X----        |   X-------X
+         /     |        | /       / |
+       X-------X--------X-------X   |
+       |     /        / |       |   |
+       |   X--------X   |       |   |
+  J    |   |        |   |       | /
+  ^    X----        |   X-------X
+  |        |        | / |  |
+   --->I   X--------X   |  X
+ /             |        | /
+v              X--------X
+K                                                */
+    if (std::isnan(glocation(0) + glocation(1) + glocation(2)))
         return false;
 
-    int I = int(i) - 1;
-    int J = int(j) - 1;
-    int K = int(k) - 1;
+    float glocation_scaled_x = glocation(0) / cell_size_(0) + resolution_(0) / 2.f;
+    float glocation_scaled_y = glocation(1) / cell_size_(1) + resolution_(1) / 2.f;
+    float glocation_scaled_z = glocation(2) / cell_size_(2) + resolution_(2) / 2.f;
 
-    if (I >= resolution_(0) - 4 || J >= resolution_(1) - 3 || K >= resolution_(2) - 3 || I <= 1 || J <= 1 || K <= 1)
+    unsigned int I = floorf(glocation_scaled_x);
+    unsigned int J = floorf(glocation_scaled_y);
+    unsigned int K = floorf(glocation_scaled_z);
+
+    if (I >= resolution_(0) - 3 || J >= resolution_(1) - 3 || K >= resolution_(2) - 3 || I <= 1 || J <= 1 || K <= 1)
         return false;
 
-    if (!v(I + 1, J + 0, K + 1) == pos_tranc_dist_ || !v(I + 1, J + 0, K + 2) == pos_tranc_dist_ || !v(I + 2, J + 0, K
-            + 1) == pos_tranc_dist_ || !v(I + 2, J + 0, K + 2) == pos_tranc_dist_ ||
+    unsigned int D10 = (K + 1) * num_rows_ * num_slices_ + (J + 0) * num_slices_ + I;
+    unsigned int D20 = (K + 2) * num_rows_ * num_slices_ + (J + 0) * num_slices_ + I;
 
-    !v(I + 0, J + 1, K + 1) == pos_tranc_dist_ || !v(I + 0, J + 1, K + 2) == pos_tranc_dist_ || !v(I + 1, J + 1, K)
-            == pos_tranc_dist_ || !v(I + 1, J + 1, K + 1) == pos_tranc_dist_ || !v(I + 1, J + 1, K + 2)
-            == pos_tranc_dist_ || !v(I + 1, J + 1, K + 3) == pos_tranc_dist_ || !v(I + 2, J + 1, K) == pos_tranc_dist_
-            || !v(I + 2, J + 1, K + 1) == pos_tranc_dist_ || !v(I + 2, J + 1, K + 2) == pos_tranc_dist_ || !v(I + 2, J
-            + 1, K + 3) == pos_tranc_dist_ || !v(I + 3, J + 1, K + 1) == pos_tranc_dist_ || !v(I + 3, J + 1, K + 2)
-            == pos_tranc_dist_ ||
+    unsigned int D01 = (K + 0) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + I;
+    unsigned int D11 = (K + 1) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + I;
+    unsigned int D21 = (K + 2) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + I;
+    unsigned int D31 = (K + 3) * num_rows_ * num_slices_ + (J + 1) * num_slices_ + I;
 
-    !v(I + 0, J + 2, K + 1) == pos_tranc_dist_ || !v(I + 0, J + 2, K + 2) == pos_tranc_dist_ || !v(I + 1, J + 2, K)
-            == pos_tranc_dist_ || !v(I + 1, J + 2, K + 1) == pos_tranc_dist_ || !v(I + 1, J + 2, K + 2)
-            == pos_tranc_dist_ || !v(I + 1, J + 2, K + 3) == pos_tranc_dist_ || !v(I + 2, J + 2, K) == pos_tranc_dist_
-            || !v(I + 2, J + 2, K + 1) == pos_tranc_dist_ || !v(I + 2, J + 2, K + 2) == pos_tranc_dist_ || !v(I + 2, J
-            + 2, K + 3) == pos_tranc_dist_ || !v(I + 3, J + 2, K + 1) == pos_tranc_dist_ || !v(I + 3, J + 2, K + 2)
-            == pos_tranc_dist_ ||
+    unsigned int D02 = (K + 0) * num_rows_ * num_slices_ + (J + 2) * num_slices_ + I;
+    unsigned int D12 = (K + 1) * num_rows_ * num_slices_ + (J + 2) * num_slices_ + I;
+    unsigned int D22 = (K + 2) * num_rows_ * num_slices_ + (J + 2) * num_slices_ + I;
+    unsigned int D32 = (K + 3) * num_rows_ * num_slices_ + (J + 2) * num_slices_ + I;
 
-    !v(I + 1, J + 3, K + 1) == pos_tranc_dist_ || !v(I + 1, J + 3, K + 2) == pos_tranc_dist_ || !v(I + 2, J + 3, K + 1)
-            == pos_tranc_dist_ || !v(I + 2, J + 3, K + 2) == pos_tranc_dist_)
-        return false;
+    unsigned int D13 = (K + 1) * num_rows_ * num_slices_ + (J + 3) * num_slices_ + I;
+    unsigned int D23 = (K + 2) * num_rows_ * num_slices_ + (J + 3) * num_slices_ + I;
+
+    if (                              !tsdf_[D10 + 1] == pos_tranc_dist_ || !tsdf_[D10 + 2] == pos_tranc_dist_ ||
+                                      !tsdf_[D20 + 1] == pos_tranc_dist_ || !tsdf_[D20 + 2] == pos_tranc_dist_ ||
+
+                                      !tsdf_[D01 + 1] == pos_tranc_dist_ || !tsdf_[D01 + 2] == pos_tranc_dist_ ||
+    !tsdf_[D11] == pos_tranc_dist_ || !tsdf_[D11 + 1] == pos_tranc_dist_ || !tsdf_[D11 + 2] == pos_tranc_dist_ || !tsdf_[D11 + 3] == pos_tranc_dist_ ||
+    !tsdf_[D21] == pos_tranc_dist_ || !tsdf_[D21 + 1] == pos_tranc_dist_ || !tsdf_[D21 + 2] == pos_tranc_dist_ || !tsdf_[D21 + 3] == pos_tranc_dist_ ||
+                                      !tsdf_[D31 + 1] == pos_tranc_dist_ || !tsdf_[D31 + 2] == pos_tranc_dist_ ||
+
+                                      !tsdf_[D02 + 1] == pos_tranc_dist_ || !tsdf_[D02 + 2] == pos_tranc_dist_ ||
+    !tsdf_[D12] == pos_tranc_dist_ || !tsdf_[D12 + 1] == pos_tranc_dist_ || !tsdf_[D12 + 2] == pos_tranc_dist_ || !tsdf_[D12 + 3] == pos_tranc_dist_ ||
+    !tsdf_[D22] == pos_tranc_dist_ || !tsdf_[D22 + 1] == pos_tranc_dist_ || !tsdf_[D22 + 2] == pos_tranc_dist_ || !tsdf_[D22 + 3] == pos_tranc_dist_ ||
+                                      !tsdf_[D32 + 1] == pos_tranc_dist_ || !tsdf_[D32 + 2] == pos_tranc_dist_ ||
+
+                                      !tsdf_[D13 + 1] == pos_tranc_dist_ || !tsdf_[D13 + 2] == pos_tranc_dist_ ||
+                                      !tsdf_[D23 + 1] == pos_tranc_dist_ || !tsdf_[D23 + 2] == pos_tranc_dist_
+        ) return false;
     else
         return true;
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-Eigen::Vector3f cvpr_tum::TsdfVolume::getVoxelGCoo(int x, int y, int z) const
-{
-    //Eigen::Vector3f coo((float)x, (float)y, (float)z);
-    float ray_x = (x - resolution_(0) / 2) * cell_size_(0);
-    float ray_y = (y - resolution_(1) / 2) * cell_size_(1);
-    float ray_z = (z - resolution_(2) / 2) * cell_size_(2);
-    //coo.array() -= resolution_.array().cast<float> () / 2.f; //shift to the center;
-    //coo.array() *= cell_size_.array();
-    //return coo;
-    return Eigen::Vector3f(ray_x, ray_y, ray_z);
 }

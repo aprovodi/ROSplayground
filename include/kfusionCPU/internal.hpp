@@ -19,9 +19,8 @@ template<typename T>
 
 /** \brief Camera intrinsics structure
  */
-class Intr
+struct Intr
 {
-public:
     float fx, fy, cx, cy;
     Intr()
     {

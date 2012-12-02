@@ -83,19 +83,20 @@ class kfusionCPU
 {
     enum Pyramid
     {
-        LEVELS = 3
+        LEVELS = 5
     };
 
     //should be multiple of 32
     enum VolumeResolution
     {
-        VOLUME_X = 128, VOLUME_Y = 128, VOLUME_Z = 128
+        VOLUME_X = 64, VOLUME_Y = 64, VOLUME_Z = 64
     };
 
 public:
-
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     typedef Eigen::Matrix<float, 3, 3, Eigen::RowMajor> Matrix3frm;
     typedef Eigen::Vector3f Vector3f;
+    typedef Eigen::Matrix<float,6,1> Vector6f;
 
     typedef cv::Mat DepthMap;
     typedef boost::multi_array<Vector3f, 2> VertexMap;
@@ -103,14 +104,24 @@ public:
     typedef boost::array<DepthMap, LEVELS> DepthPyramid;
     typedef boost::array<VertexMap, LEVELS> VertexPyramid;
     typedef boost::array<NormalMap, LEVELS> NormalPyramid;
-    typedef Eigen::Matrix<float,6,1> Vector6f;
 
     /**
      * Build a kinect fusion object, which can be run to process a ROS
      * image using the kinect fusion algorithm.
      */
-    kfusionCPU(int rows = 480, int cols = 640);
+
+    /** \brief Constructor
+     * \param[in] rows width of the input depth image
+     * \param[in] cols height of the input depth image
+     */
+    kfusionCPU(int rows = 480, int cols = 640, int encoding = 5 );
+
+    /** \brief Destructor */
     ~kfusionCPU();
+
+    /** \brief Performs the tracker reset to initial  state. It's used if case of camera tracking fail.
+     */
+    void reset();
 
     /** \brief Sets Depth camera intrinsics
      * \param[in] fx focal length x
@@ -139,14 +150,22 @@ public:
     /** \brief Returns TSDF volume storage */
     TsdfVolume& volume();
 
+    /** \brief Returns camera pose at given time, default the last pose
+      * \param[in] time Index of frame for which camera pose is returned.
+      * \return camera pose
+      */
+    Eigen::Affine3f getCameraPose (int time = -1) const;
+
     inline const DepthMap get_raw_depth_map() const
     {
         return raw_depth_map_;
     }
+
     inline const DepthMap filtered_depth_map() const
     {
         return depth_pyramid_[0];
     }
+
     inline const VertexMap get_vertex_map() const
     {
         return vertex_pyramid_[0];
@@ -154,9 +173,19 @@ public:
 
 private:
 
+    /** \brief Height of input depth image. */
+    int rows_;
+    /** \brief Width of input depth image. */
+    int cols_;
+
     /** \brief A depth map of raw values, as taken from the input image. */
     DepthMap raw_depth_map_;
+
+    /** \brief A depth map encoding. */
     int raw_depth_map_encoding_;
+
+    /** \brief array with IPC iteration numbers for each pyramid level */
+    int icp_iterations_[LEVELS];
 
     /** \brief A filtered depth map, produced using a bilinear filter on the original image. */
     DepthPyramid depth_pyramid_;
@@ -167,10 +196,6 @@ private:
     /** \brief Normal maps pyramid for current frame. */
     NormalPyramid normal_pyramid_;
 
-    /** \brief Height of input depth image. */
-    int rows_;
-    /** \brief Width of input depth image. */
-    int cols_;
     /** \brief Frame counter */
     int global_time_;
 
@@ -186,17 +211,14 @@ private:
     /** \brief Initial camera position in volume coo space. */
     Vector3f init_tcam_;
 
-    /** \brief Transformation composed of the camera. */
+    /** \brief Transformation composed of the camera (SO(3)). */
     Eigen::Matrix4f Transformation_;
 
+    /** \brief Transformation in so(3). */
     Vector6f Pose_;
+
+    /** \brief Measurement of camera displacement. */
     Vector6f cumulative_pose_;
-
-    /** \brief Check if we've just started. */
-    bool first_frame_;
-
-    /** \brief array with IPC iteration numbers for each pyramid level */
-    int icp_iterations_[LEVELS];
 
     // data required for the bilinear filtering
     static const float sigma_colour = 30; // mm
@@ -204,15 +226,17 @@ private:
     static const int D = (6 * 2 + 1);
 
     /** \brief Array of camera rotation matrices for each moment of time. */
-    std::vector<Matrix3frm> rmats_;
+    std::vector<Matrix3frm, Eigen::aligned_allocator<Matrix3frm> > rmats_;
 
     /** \brief Array of camera translations for each moment of time. */
-    std::vector<Vector3f> tvecs_;
+    std::vector<Vector3f, Eigen::aligned_allocator<Vector3f> > tvecs_;
 
     /** \brief Camera movement threshold. TSDF is integrated iff a camera movement metric exceedes some value. */
     float integration_metric_threshold_;
 
-    float robust_statistic_coefficient_;
+    const float robust_statistic_coefficient_;
+
+    const float regularization_;
 
     /** \brief Allocates all internal buffers.
      * \param[in] rows_arg
@@ -220,9 +244,11 @@ private:
      */
     void allocateMaps(int rows_arg, int cols_arg);
 
-    /** \brief Performs the tracker reset to initial  state. It's used if case of camera tracking fail.
-     */
-    void reset();
+    /** \brief Composes Twist from vector6f ksi */
+    Eigen::Matrix4f Twist(const Eigen::Matrix<float, 6, 1>& ksi);
+
+    /** \brief Calculates camera transfromations in each iteration */
+    Vector6f TrackCameraPose(void);
 
     /** \brief Creates a vertex map given a depth map
      * \param[in] intr camera intrinsics
@@ -282,13 +308,6 @@ private:
     {
         return width(map);
     }
-
-    Eigen::Matrix4f Twist(const Eigen::Matrix<float, 6, 1>& xi);
-
-    Vector6f TrackCameraPose(void);
-    std::vector<Eigen::Matrix4f,Eigen::aligned_allocator<Eigen::Matrix4f> > transformations_;
-    Eigen::Vector4f To3D(int row, int column, float depth, const Intr& intr);
-
 };
 }
 #endif /* __KFUSIONCPU_H__ */
