@@ -1,0 +1,23 @@
+<package>
+  <description brief="kfusionCPU_visualization">
+
+     kfusionCPU_visualization
+
+  </description>
+  <author>Artem Provodin</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/kfusionCPU_visualization</url>
+  <depend package="roscpp"/>
+  <depend package="pcl17"/>
+  <depend package="pcl17_ros"/>
+  <depend package="cuda"/>
+  <depend package="opencv2"/>
+  <depend package="cv_bridge"/>
+  <depend package="kfusionCPU"/>
+  <depend package="kfusionCPU_msgs"/>
+  <depend package="std_msgs"/>
+
+</package>
+
+

@@ -1,0 +1,14 @@
+<package>
+  <description brief="kfusionCPU_msgs">
+
+     kfusionCPU_msgs
+
+  </description>
+  <author>Artem Provodin</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/kfusionCPU_msgs</url>
+
+</package>
+
+
