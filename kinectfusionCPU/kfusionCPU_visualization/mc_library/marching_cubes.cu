@@ -338,8 +338,14 @@ void ThrustScanWrapperUint2(uint2* output, uint2* input, unsigned int numElement
                            zero);
 }
 
-bool CUDAMarchingCubes::computeIsosurface(float * volume_data, unsigned int grid_size, float world_size,
-							float* &triangles_buffer, uint* total_vertexes) {
+bool CUDAMarchingCubes::computeIsosurface(float * volume_data,
+										unsigned int grid_size, float world_size,
+										float* &triangles_buffer, uint& total_vertexes) {
+//    gridSize_ = make_uint3(grid_size_x, grid_size_y, grid_size_z);
+
+//    voxelSize_ = make_float3(world_size_x / gridSize_.x,
+//	                    world_size_y / gridSize_.y,
+//	                    world_size_z / gridSize_.z);
     gridSize_ = make_uint3(grid_size);
 
     voxelSize_ = make_float3(world_size / gridSize_.x,
@@ -382,7 +388,8 @@ bool CUDAMarchingCubes::computeIsosurface(float * volume_data, unsigned int grid
     if (activeVoxels==0) {
         // return if there are no full voxels
         totalVerts = 0;
-        *total_vertexes = totalVerts;
+        total_vertexes = totalVerts;
+		triangles_buffer = NULL;
         Cleanup();
         return false;
     }
@@ -427,15 +434,14 @@ bool CUDAMarchingCubes::computeIsosurface(float * volume_data, unsigned int grid
 
       offsetTriangleVertices<<<grid3, threads>>>(vertOut, origin_, totalVerts - 1);
 */
+	triangles_buffer = (float*)malloc(3*totalVerts*sizeof(float));
+    
+	HANDLE_ERROR( cudaMemcpy(triangles_buffer, d_triangles_buffer, 3*totalVerts*sizeof(float), cudaMemcpyDeviceToHost) );
+	cudaFree(d_triangles_buffer);
 
-      triangles_buffer = (float*)malloc(3*totalVerts*sizeof(float));
+	total_vertexes = totalVerts;
 
-      HANDLE_ERROR( cudaMemcpy(triangles_buffer, d_triangles_buffer, 3*totalVerts*sizeof(float), cudaMemcpyDeviceToHost) );
-
-      cudaFree(d_triangles_buffer);
-      *total_vertexes = totalVerts;
-
-      // Tear down and free resources
-      Cleanup();
-      return true;
+ 	// Tear down and free resources
+ 	Cleanup();
+ 	return true;
 }

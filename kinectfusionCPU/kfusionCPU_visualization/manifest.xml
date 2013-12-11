@@ -12,11 +12,17 @@
   <depend package="pcl17"/>
   <depend package="pcl17_ros"/>
   <depend package="cuda"/>
+
+  <depend package="tf"/>
+  <depend package="tf_conversions"/>
+  <depend package="eigen_conversions"/>
+
   <depend package="opencv2"/>
   <depend package="cv_bridge"/>
   <depend package="kfusionCPU"/>
   <depend package="kfusionCPU_msgs"/>
   <depend package="std_msgs"/>
+  <depend package="geometry_msgs"/>
 
 </package>
 

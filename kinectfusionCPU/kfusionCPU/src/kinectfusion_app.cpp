@@ -1,79 +1,75 @@
-#include <ros/ros.h> // for ros::init etc.
-#include <cv_bridge/cv_bridge.h> // for CvImages
-#include <image_transport/image_transport.h> // for sensor_msgs::Image
+#include <ros/ros.h>  // for ros::init etc.
+#include <cv_bridge/cv_bridge.h>  // for CvImages
+#include <image_transport/image_transport.h>  // for sensor_msgs::Image
 #include <sensor_msgs/image_encodings.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <std_msgs/Bool.h>
-#include "kfusionCPU/kfusionCPU.h" // for kinect_fusion
+#include <tf_conversions/tf_eigen.h>
+
+#include "kfusionCPU/kfusionCPU.h"  // for kinect_fusion
 #include "kfusionCPU_msgs/Volume.h"
-#include "kfusionCPU_msgs/Transformation.h"
 
-using namespace cvpr_tum;
-
-struct kfusionCpuApp
-{
-    kfusionCpuApp(float vsz)
+struct kfusionCpuApp {
+    kfusionCpuApp(ros::NodeHandle& nh, ros::NodeHandle& nh_private) :
+        nh_(nh),
+        nh_private_(nh_private)
     {
         // setup subscribers
-        depth_image_sub_ = nh_.subscribe("/camera/depth/image", 1, &kfusionCpuApp::process_image_callback, this);
+        depth_image_sub_ = nh_.subscribe("/camera/depth/image_raw", 1, &kfusionCpuApp::process_image_callback, this);
         reset_sub_ = nh_.subscribe("/reset", 1, &kfusionCpuApp::reset_kfusion, this);
 
         // setup publishers
         uint32_t queue_size = 1;
-
         std::string topic_volume = nh_.resolveName("/kfusionCPU/tsdf_volume");
-        volume_publisher_ = nh_.advertise<kfusionCPU_msgs::Volume> (topic_volume, queue_size);
+        volume_pub_ = nh_.advertise<kfusionCPU_msgs::Volume> (topic_volume, queue_size);
 
         std::string topic_translation = nh_.resolveName("/kfusionCPU/transformations");
-        cam_transform_publisher_ = nh_.advertise<kfusionCPU_msgs::Transformation> (topic_translation, queue_size);
+        pose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped> (topic_translation, queue_size);
 
         // init Kfusion
-        Eigen::Vector3f volume_size = Eigen::Vector3f::Constant(vsz/*meters*/);
+        nh_.param("world_size", world_size_, 3.0);
+        Eigen::Vector3f volume_size = Eigen::Vector3f::Constant(world_size_/*meters*/);
         kfusionCPU_.volume().setSize(volume_size);
 
-        //Eigen::Matrix3f R = Eigen::Matrix3f::Identity(); // * AngleAxisf( pcl17::deg2rad(-30.f), Vector3f::UnitX());
-        //Eigen::Vector3f t = volume_size * 0.5f - Eigen::Vector3f(0, 0, volume_size(2) / 2 * 1.2f);
+        Eigen::Matrix3f R = Eigen::Matrix3f::Identity();
+        Eigen::Vector3f t = -Eigen::Vector3f(0, 0, volume_size (2) / 2 * 1.0f);
 
-        //Eigen::Affine3f pose = Eigen::Translation3f(t) * Eigen::AngleAxisf(R);
+        Eigen::Affine3f pose = Eigen::Translation3f(t) * Eigen::AngleAxisf(R);
+        kfusionCPU_.setInitalCameraPose(pose);
 
-        //kfusionCPU_.setInitalCameraPose(pose);
+        kfusionCPU_.volume().setPositiveTsdfTruncDist(0.050f/*meters*/);
+        kfusionCPU_.volume().setNegativeTsdfTruncDist(-0.030f/*meters*/);
     }
 
-    ~kfusionCpuApp()
-    {
-    }
+    ~kfusionCpuApp() { }
 
-    sensor_msgs::ImagePtr map_to_image(const cv::Mat& map, std::string& encoding)
-    {
+    sensor_msgs::ImagePtr map_to_image(const cv::Mat& map, std::string& encoding) {
         cv_bridge::CvImagePtr cv_image(new cv_bridge::CvImage);
         cv_image->image = map;
         cv_image->encoding = encoding;
         return cv_image->toImageMsg();
     }
 
-    void process_image_callback(const sensor_msgs::ImageConstPtr& msg)
-    {
+    void process_image_callback(const sensor_msgs::ImageConstPtr& msg) {
         // convert the ROS image into an OpenCV image
         cv_bridge::CvImagePtr raw_depth_map = cv_bridge::toCvCopy(msg, msg->encoding);
-        //raw_depth_map->image.convertTo(raw_depth_map->image, CV_32FC1); raw_depth_map->image *= 0.001f; raw_depth_map->encoding = "32FC1";
+        raw_depth_map->image.convertTo(raw_depth_map->image, CV_32FC1); raw_depth_map->image *= 0.001f; raw_depth_map->encoding = "32FC1";
 
         // run KinectFusion on the image.
         {
-            ScopeTime time(">>> KinectFusion Algorithm ...");
+            //cvpr_tum::ScopeTime time(">>> KinectFusion Algorithm ...");
             kfusionCPU_(raw_depth_map->image);
         }
 
         {
-            ScopeTime time(">>> Publishing Data ...");
-            if (volume_publisher_.getNumSubscribers() > 0)
-                publishTsdfVolume(kfusionCPU_.volume());
-
-            if (cam_transform_publisher_.getNumSubscribers() > 0)
-                publishCameraTransformation(kfusionCPU_.getCameraPose().rotation(), kfusionCPU_.getCameraPose().translation() + kfusionCPU_.volume().getSize() / 2);
+            //cvpr_tum::ScopeTime time(">>> Publishing Data ...");
+            publishTsdfVolume(kfusionCPU_.volume());
+            //publishCameraTransformation(kfusionCPU_.getCameraPose().rotation(), kfusionCPU_.getCameraPose().translation() + kfusionCPU_.volume().getSize() / 2, "/camera_transformation_frame");
+            publishCameraTransformation((Eigen::Affine3d)kfusionCPU_.getCameraPose(), "/camera_transformation_frame");
         }
     }
 
-    void publishTsdfVolume(const TsdfVolume& vol)
-    {
+    void publishTsdfVolume(const cvpr_tum::TsdfVolume& vol) {
         kfusionCPU_msgs::Volume volume_msg;
 
         volume_msg.header.stamp = ros::Time::now();
@@ -99,43 +95,58 @@ struct kfusionCpuApp
         volume_msg.data.resize(vol.getNumVoxels());
         std::copy(vol.begin(), vol.end(), volume_msg.data.begin());
 
-        volume_publisher_.publish(volume_msg);
-    }
-    void publishCameraTransformation(const Eigen::Matrix3f& Rcam, const Eigen::Vector3f& tcam)
-    {
-        kfusionCPU_msgs::Transformation transformation_msg;
-
-        transformation_msg.header.stamp = ros::Time::now();
-        transformation_msg.header.frame_id = "/camera_transformation_frame";
-
-        std::copy(Rcam.data(), Rcam.data() + 9, transformation_msg.rotation.begin());
-
-        transformation_msg.translation.x = tcam.coeff(0);
-        transformation_msg.translation.y = tcam.coeff(1);
-        transformation_msg.translation.z = tcam.coeff(2);
-
-        cam_transform_publisher_.publish(transformation_msg);
+        volume_pub_.publish(volume_msg);
     }
 
-    void reset_kfusion(const std_msgs::BoolConstPtr& reset_required)
-    {
+    void publishCameraTransformation(const Eigen::Affine3d& transform, const std::string& frame) {
+        if(pose_pub_.getNumSubscribers() == 0) return;
+
+        geometry_msgs::PoseWithCovarianceStampedPtr msg(new geometry_msgs::PoseWithCovarianceStamped);
+
+        static int seq = 1;
+
+        msg->header.seq = seq++;
+        msg->header.frame_id = frame;
+        msg->header.stamp = ros::Time::now();
+
+        tf::Transform tmp;
+
+        tf::TransformEigenToTF(transform, tmp);
+        tf::poseTFToMsg(tmp, msg->pose.pose);
+
+        msg->pose.covariance.assign(0.0);
+
+        pose_pub_.publish(msg);
+    }
+
+    void reset_kfusion(const std_msgs::BoolConstPtr& reset_required) {
         if (reset_required->data)
             kfusionCPU_.reset();
     }
 
     ros::NodeHandle nh_;
+    ros::NodeHandle nh_private_;
     ros::Subscriber depth_image_sub_;
     ros::Subscriber reset_sub_;
-    ros::Publisher volume_publisher_;
-    ros::Publisher cam_transform_publisher_;
+    ros::Publisher volume_pub_;
+    ros::Publisher pose_pub_;
 
-    kfusionCPU kfusionCPU_;
+    double world_size_;
+
+    cvpr_tum::kfusionCPU kfusionCPU_;
 };
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv) {
     ros::init(argc, argv, "kinectfusion_app");
-    float volume_size = 3.f;
-    kfusionCpuApp app(volume_size);
+
+    ros::NodeHandle nh;
+    ros::NodeHandle nh_private("~");
+
+    kfusionCpuApp app(nh, nh_private);
+
+    ROS_INFO("kfusion algorithm started...");
+
     ros::spin();
+
+    return 0;
 }

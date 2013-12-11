@@ -26,7 +26,9 @@ public:
      * \param[in] triangles_buffer output triangles buffer, representing the isosurface
      * \param[in] total_vertexes number of triangles' vertexes
      */
-    bool computeIsosurface(float * volume_data, unsigned int grid_size, float world_size, float* &triangles_buffer, uint* total_vertexes);
+	bool computeIsosurface(float * volume_data,
+										unsigned int grid_size, float world_size,
+										float* &triangles_buffer, uint& total_vertexes);
 
     inline unsigned int GetVertexCount() const
     {

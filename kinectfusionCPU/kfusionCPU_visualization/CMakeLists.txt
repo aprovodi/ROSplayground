@@ -21,14 +21,14 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 find_package(Eigen REQUIRED)
 include_directories(${EIGEN_INCLUDE_DIRS})
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x -DEIGEN_NO_DEBUG -msse2")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DEIGEN_NO_DEBUG -fpermissive -Wno-invalid-offsetof")
 
-include_directories(/usr/include/vtk-5.6)
+include_directories(/usr/include/vtk-5.8)
 include_directories(mc_library)
 
 #common commands for building c++ executables and libraries
 #rosbuild_add_library(${PROJECT_NAME} src/example.cpp)
 #rosbuild_add_boost_directories()
-#rosbuild_link_boost(${PROJECT_NAME} thread)
-rosbuild_add_executable(${PROJECT_NAME} src/kfusion_vis.cpp)
-target_link_libraries(${PROJECT_NAME} ${PROJECT_SOURCE_DIR}/mc_library/libmarching_cubes.so)
+#rosbuild_link_boost(${PROJECT_NAME} thread boost_filesystem boost_system)
+rosbuild_add_executable(${PROJECT_NAME} src/kfusion_vis.cpp src/pcl_trajectory_visualizer.cpp src/SceneCloudView.cpp)
+target_link_libraries(${PROJECT_NAME} ${PROJECT_SOURCE_DIR}/mc_library/libmarching_cubes.so /usr/lib/libboost_system.so.1.46.1 /usr/lib/libvtkCommon.so.5.8 /usr/lib/libvtkFiltering.so.5.8 /usr/lib/libvtkRendering.so.5.8 /usr/lib/libvtkGraphics.so.5.8 /usr/lib/libboost_signals.so.1.46.1)
