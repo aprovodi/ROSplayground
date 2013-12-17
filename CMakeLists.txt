@@ -16,23 +16,35 @@ set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 #set the default path for built libraries to the "lib" directory
 set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/lib)
 
-#uncomment if you have defined messages
-#rosbuild_genmsg()
-#uncomment if you have defined services
-#rosbuild_gensrv()
+rosbuild_check_for_sse()
 
 find_package(OpenCV REQUIRED)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 find_package(Eigen REQUIRED)
 include_directories(${EIGEN_INCLUDE_DIRS})
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
+# SSE flags
+rosbuild_check_for_sse()
 
-include_directories(/usr/include/vtk-5.6)
-include_directories(mc_library)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SSE_FLAGS} -DEIGEN_NO_DEBUG -fpermissive -Wno-invalid-offsetof")
+
+set( sources	
+        src/kfusionCPU.cpp 
+        src/tsdfVolume.cpp 
+        src/CircularBuffer.cpp
+        src/kinectfusion_app.cpp
+) 
+
+set( headers 
+        include/kfusionCPU/internal.hpp 
+        include/kfusionCPU/kfusionCPU.h 
+        include/kfusionCPU/OptimizedSelfAdjointMatrix6x6f.h 
+        include/kfusionCPU/tsdfVolume.h
+        include/kfusionCPU/CircularBuffer.h
+) 
 
 #common commands for building c++ executables and libraries
-rosbuild_add_executable(${PROJECT_NAME} src/kfusionCPU.cpp src/kinectfusion_app.cpp src/tdsfVolume.cpp)
-target_link_libraries(${PROJECT_NAME} ${PROJECT_SOURCE_DIR}/mc_library/libmarching_cubes.so)
-#rosbuild_add_boost_directories()
+rosbuild_add_library(kfusionCPU src/kfusionCPU.cpp src/tsdfVolume.cpp src/CircularBuffer.cpp)
+rosbuild_add_executable(${PROJECT_NAME}_app src/kfusionCPU.cpp src/kinectfusion_app.cpp src/tsdfVolume.cpp src/CircularBuffer.cpp)
+#rosbuild_add_boost_directories(${PROJECT_NAME} thread)
 rosbuild_add_openmp_flags(${PROJECT_NAME})

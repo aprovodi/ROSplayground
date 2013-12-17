@@ -9,14 +9,19 @@
   <review status="unreviewed" notes=""/>
   <url>http://ros.org/wiki/kfusionCPU</url>
   <depend package="sensor_msgs"/>
+  <depend package="geometry_msgs"/>
   <depend package="std_msgs"/>
   <depend package="roscpp"/>
   <depend package="image_transport"/>
   <depend package="cv_bridge"/>
   <depend package="opencv2"/>
-  <depend package="cuda"/>
-  <depend package="pcl17"/>
-  <depend package="pcl17_ros"/>
+  <depend package="tf"/>
+  <depend package="tf_conversions"/>
+  <depend package="kfusionCPU_msgs"/>
+
+  <export>
+    <cpp cflags="-I${prefix}/include" lflags="-L${prefix}/lib -Wl,-rpath,${prefix}/lib -lkfusionCPU"/>
+  </export>
 
 </package>
 
