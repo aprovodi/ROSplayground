@@ -82,17 +82,18 @@ class TsdfVolume {
 
         /** \brief Returns volume voxel size in meters */
         const Eigen::Vector3f& getVoxelSize() const { return cell_size_; }
+        const Eigen::Vector3f& getInverseVoxelSize() const { return inverse_cell_size_; }
 
         /** \brief Returns volume number of voxels */
         unsigned int getNumVoxels() const { return num_cells_; }
 
         /** \brief Returns tsdf value from a specific location */
-        float getInterpolatedTSDFValue(const Eigen::Vector3f& glocation);
+        float getInterpolatedTSDFValue(const Eigen::Vector3f& glocation, CircularBuffer* buffer);
 
         /** \brief Returns gradient value from a specific location
          * \param[in] glocation world coo of the point
          * */
-        Eigen::Matrix<float, 1, 3> getTSDFGradient(const Eigen::Vector3f& glocation);
+        Eigen::Matrix<float, 1, 3> getTSDFGradient(const Eigen::Vector3f& glocation, CircularBuffer* buffer);
 
         /** \brief Integrates new data to the current volume
          * \param[in] raw_depth_map Depth data to integrate
@@ -109,7 +110,7 @@ class TsdfVolume {
          * \param[in] pj jth voxel coordinate in a grid
          * \param[in] pk kth voxel coordinate in a grid
          * */
-        float v(int pi, int pj, int pk) const;
+        float getv(int pi, int pj, int pk) const;
 
         void setv(int pos_x, int pos_y, int pos_z, float val);
 
@@ -149,7 +150,7 @@ class TsdfVolume {
          * \param[in] y voxel coordinate in a grid
          * \param[in] z voxel coordinate in a grid
          */
-        Eigen::Vector3f getVoxelGCoo(int x, int y, int z) const;
+        Eigen::Vector3f getVoxelGCoo(int x, int y, int z,  CircularBuffer* buffer) const;
     };
 }  // namespace cvpr_tum
 

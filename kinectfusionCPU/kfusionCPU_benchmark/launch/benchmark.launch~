@@ -1,0 +1,13 @@
+<launch>
+  <arg name="dataset" value="$(find kfusionCPU_benchmark)/dataset/rgbd_dataset_freiburg3_cabinet" />
+  <arg name="launch_dir" value="$(find kfusionCPU_benchmark)/launch" />
+  <arg name="output_dir" value="$(find kfusionCPU_benchmark)/output" />
+  
+  <!-- if relative path the file will end up in ~/.ros/ -->
+  <arg name="trajectory_file" default="$(arg output_dir)/trajectory.txt" />
+  
+  <node pkg="kfusionCPU_benchmark" type="benchmark" name="benchmark" output="screen">
+    <param type="string" name="rgbdpair_file" value="$(arg dataset)/depth.txt" />
+    <param type="string" name="groundtruth_file" value="$(arg dataset)/groundtruth.txt" />
+  </node>
+</launch>

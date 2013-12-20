@@ -18,31 +18,30 @@ cvpr_tum::kfusionCPU::kfusionCPU(int rows, int cols, int encoding)
 
     const Vector3f volume_size = Vector3f::Constant(VOLUME_SIZE);
 
-    volume_size_ = volume_size(0);
+    volume_size_ = volume_size;
 
     const Vector3i volume_resolution(TsdfVolume::VOLUME_X, TsdfVolume::VOLUME_Y, TsdfVolume::VOLUME_Z);
 
     tsdf_volume_ = TsdfVolume::TsdfVolumePtr(new TsdfVolume(volume_resolution));
-    tsdf_volume_->setSize(volume_size);
+    tsdf_volume_->setSize(volume_size_);
 
     cyclical_.setDistanceThreshold(DISTANCE_THRESHOLD);
-    cyclical_.setVolumeSize(volume_size);
+    cyclical_.setVolumeSize(volume_size_);
 
     setDepthIntrinsics(520.f, 520.f, 319.5f, 239.5f);  // default values, can be overwritten
 
-    init_Tcam_ = Eigen::Affine3f(Eigen::Translation3f(-Eigen::Vector3f(0, 0, volume_size (2) / 2 * 1.0f)));
+    init_Tcam_ = Eigen::Affine3f(Eigen::Translation3f(-Eigen::Vector3f(0, 0, volume_size_ (2) / 2 * 1.0f)));
 
     const int iters[] = {0, 0, 2, 4, 8};
     std::copy(iters, iters + LEVELS, icp_iterations_);
 
     allocateMaps(rows_, cols_);
 
+    disable_intergration_ = false;
+
     Tmats_.reserve(30000);
 
     reset();
-
-    // initialize cyclical buffer
-    cyclical_.initBuffer(tsdf_volume_);
 }
 
 cvpr_tum::kfusionCPU::~kfusionCPU() {
@@ -98,7 +97,7 @@ void cvpr_tum::kfusionCPU::setDepthIntrinsics(float fx, float fy, float cx, floa
 
 ////////////////////////////////////////////////////////////////////////////////
 bool cvpr_tum::kfusionCPU::operator()(const DepthMap& raw_depth) {
-    ScopeTime time(">>> TOTAL TIME FOR ONE ITERATION");
+    //ScopeTime time(">>> TOTAL TIME FOR ONE ITERATION");
     Intr intr(fx_, fy_, cx_, cy_);
 
     raw_depth_map_ = raw_depth;
@@ -132,9 +131,14 @@ bool cvpr_tum::kfusionCPU::operator()(const DepthMap& raw_depth) {
 
     ///////////////////////////////////////////////////////////////////////////////////////////
     // check if we need to shift
-    bool has_shifted = cyclical_.checkForShift(tsdf_volume_, getCameraPose(), 0.5 * volume_size_, true);
+    bool has_shifted = cyclical_.checkForShift(tsdf_volume_, getCameraPose(), volume_size_(0) / 2.f, false);
+    //bool has_shifted = cyclical_.checkForShift(tsdf_volume_, getCameraPose(), 0.f, false);
     if(has_shifted)
-        std::cout << "SHIFTING" << std::endl;
+    {
+        disable_intergration_ = true;
+        std::cout << "VOLUME SHIFTED" << std::endl;
+    }
+
 
     ///////////////////////////////////////////////////////////////////////////////////////////
     // Integration check - We do not integrate volume if camera does not move far enought.
@@ -142,7 +146,7 @@ bool cvpr_tum::kfusionCPU::operator()(const DepthMap& raw_depth) {
     {
         //ScopeTime time(">>> Volume Integration");
 
-        bool integrate = (cumulative_pose_.norm() < integration_metric_threshold_ && global_time_ > 0);
+        bool integrate = (cumulative_pose_.norm() < integration_metric_threshold_ && global_time_ > 0) && !disable_intergration_;
 
         ///////////////////////////////////////////////////////////////////////////////////////////
         // Volume integration
@@ -174,6 +178,8 @@ Eigen::Matrix<float, 6, 1> cvpr_tum::kfusionCPU::TrackCameraPose() {
     //jacobian = derivative of SDF wrt ksi (chain rule)
     Eigen::Matrix<float, 1, 6> J = Eigen::Matrix<float, 1, 6>::Zero();
 
+    float D = tsdf_volume_->getPositiveTsdfTruncDist();
+
     OptimizedSelfAdjointMatrix6x6f osam;
 
     for (int level_index = LEVELS - 1; level_index >= 0; --level_index) {
@@ -201,11 +207,12 @@ Eigen::Matrix<float, 6, 1> cvpr_tum::kfusionCPU::TrackCameraPose() {
                 if (is_nan(v(2)))
                     continue;
 
+                //Eigen::Vector3f v_g = tsdf_volume_->getInverseVoxelSize()(0)*(Rcam * v + (tcam)) + tsdf_volume_->getResolution().cast<float>()/2.f;
                 Eigen::Vector3f v_g = Rcam * v + tcam;
 
                 //if (!tsdf_volume_->validGradient(v_g)) continue;
 
-                float D = tsdf_volume_->getInterpolatedTSDFValue(v_g);
+                D = tsdf_volume_->getInterpolatedTSDFValue(v_g, getCircularBufferStructure());
 
                 // opt: make methods inline or store value in temporary?!
                 if (fabs(D - tsdf_volume_->getPositiveTsdfTruncDist()) < std::numeric_limits<float>::epsilon()
@@ -213,7 +220,7 @@ Eigen::Matrix<float, 6, 1> cvpr_tum::kfusionCPU::TrackCameraPose() {
                     continue;
 
                 // partial derivative of SDF wrt position
-                dSDF_dx = tsdf_volume_->getTSDFGradient(v_g);
+                dSDF_dx = tsdf_volume_->getTSDFGradient(v_g, getCircularBufferStructure());
                 //partial derivative of position wrt optimizaiton parameters
 
                 // opt: compute the 6 values in J analytically as expressions of dSDF_dx and v_g and hard code the expressions here! Saves matrix multiplication!

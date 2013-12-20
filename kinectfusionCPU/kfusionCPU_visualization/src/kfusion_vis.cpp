@@ -65,7 +65,7 @@ struct kfusionCpuVis
 
             tf::poseMsgToTF(pose->pose.pose, tmp_tf);
             tf::TransformTFToEigen(tmp_tf, cam_pose_);
-            cam_pose_.translation() += world_size_ / 2;
+            //cam_pose_.translation() += world_size_ / 2;
 
             scene_cloud_view_.addCoordinateSystem(cam_pose_, false);
             scene_cloud_view_.updateCamPCloud(cam_pose_.translation());

@@ -1,0 +1,80 @@
+#ifndef CAMERA_TRAJECTORY_VISUALIZER_H_
+#define CAMERA_TRAJECTORY_VISUALIZER_H_
+
+#include <list>
+#include <Eigen/Geometry>
+#include <boost/shared_ptr.hpp>
+#include <pcl17/point_types.h>
+#include <pcl17/visualization/pcl_visualizer.h>
+
+#include "fluent_interface.h"
+
+struct Color
+{
+public:
+  static const Color& red()
+  {
+    static Color red(1.0, 0.2, 0.2);
+    return red;
+  }
+  static const Color& green()
+  {
+    static Color green(0.2, 1.0, 0.2);
+    return green;
+  }
+  static const Color& blue()
+  {
+    static Color blue(0.2, 0.2, 1.0);
+    return blue;
+  }
+
+  Color() :
+    r(0), g(0), b(0)
+  {
+  }
+  Color(double r, double g, double b) :
+    r(r), g(g), b(b)
+  {
+  }
+
+  double r, g, b;
+};
+
+class TrajectoryVisualizer
+{
+public:
+  typedef boost::shared_ptr<TrajectoryVisualizer> Ptr;
+
+  virtual ~TrajectoryVisualizer() {};
+  FI_ATTRIBUTE(TrajectoryVisualizer, std::string, name);
+  FI_ATTRIBUTE(TrajectoryVisualizer, Color, color);
+
+  virtual TrajectoryVisualizer& add(const Eigen::Affine3d& pose) = 0;
+};
+
+class PclTrajectoryVisualizer : public TrajectoryVisualizer
+{
+public:
+  typedef boost::shared_ptr<PclTrajectoryVisualizer> PclTrajectoryVisualizerPtr;
+  PclTrajectoryVisualizer(std::string& name);
+
+  virtual TrajectoryVisualizer& add(const Eigen::Affine3d& pose);
+
+  void updateVisualizer(pcl17::visualization::PCLVisualizer::Ptr& visualizer);
+
+private:
+  class PointPair
+  {
+  public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+    pcl17::PointXYZ second;
+    pcl17::PointXYZ *first;
+  };
+
+  typedef std::list<PointPair, Eigen::aligned_allocator<PointPair> > list;
+
+  list pairs_;
+  list::iterator last_;
+};
+
+#endif /* CAMERA_TRAJECTORY_VISUALIZER_H_ */

@@ -1,0 +1,111 @@
+#ifndef CAMERA_TRAJECTORY_VISUALIZER_H_
+#define CAMERA_TRAJECTORY_VISUALIZER_H_
+
+
+#include <Eigen/Geometry>
+
+/**
+ * Macro to easily define fluent interfaces.
+ */
+#define FI_ATTRIBUTE(FI_TYPE, ATTR_TYPE, ATTR_NAME) \
+  protected: \
+    ATTR_TYPE ATTR_NAME ## _; \
+  public: \
+    FI_TYPE& ATTR_NAME(ATTR_TYPE const& value) \
+    { \
+      ATTR_NAME ## _ = value; \
+      return *this; \
+    } \
+    ATTR_TYPE const& ATTR_NAME() const \
+    { \
+      return ATTR_NAME ## _; \
+    } \
+    ATTR_TYPE& ATTR_NAME() \
+    { \
+      return ATTR_NAME ## _; \
+    } \
+
+struct Color
+{
+public:
+  static const Color& red()
+  {
+    static Color red(1.0, 0.2, 0.2);
+    return red;
+  }
+  static const Color& green()
+  {
+    static Color green(0.2, 1.0, 0.2);
+    return green;
+  }
+  static const Color& blue()
+  {
+    static Color blue(0.2, 0.2, 1.0);
+    return blue;
+  }
+
+  Color() :
+    r(0), g(0), b(0)
+  {
+  }
+  Color(double r, double g, double b) :
+    r(r), g(g), b(b)
+  {
+  }
+
+  double r, g, b;
+};
+
+class TrajectoryVisualizer
+{
+public:
+  typedef boost::shared_ptr<TrajectoryVisualizer> Ptr;
+
+  virtual ~TrajectoryVisualizer() {};
+  FI_ATTRIBUTE(TrajectoryVisualizer, std::string, name);
+  FI_ATTRIBUTE(TrajectoryVisualizer, Color, color);
+
+  virtual TrajectoryVisualizer& add(const Eigen::Affine3d& pose) = 0;
+};
+
+class CameraTrajectoryVisualizerInterface
+{
+public:
+  virtual ~CameraTrajectoryVisualizerInterface() {};
+
+  //virtual CameraVisualizer::Ptr camera(std::string name) = 0;
+  virtual TrajectoryVisualizer::Ptr trajectory(std::string name) = 0;
+
+  virtual void reset() = 0;
+
+  virtual bool native(void*& native_visualizer)
+  {
+    native_visualizer = 0;
+    return false;
+  }
+};
+
+struct PclCameraTrajectoryVisualizerImpl;
+
+class PclCameraTrajectoryVisualizer : public CameraTrajectoryVisualizerInterface
+{
+public:
+  PclCameraTrajectoryVisualizer(bool async = true);
+  virtual ~PclCameraTrajectoryVisualizer();
+
+
+  //virtual dvo::visualization::CameraVisualizer::Ptr camera(std::string name);
+  virtual dvo::visualization::TrajectoryVisualizer::Ptr trajectory(std::string name);
+
+  virtual void reset();
+
+  void bindSwitchToKey(Switch& s, std::string key);
+
+  void render(int milliseconds = 15);
+
+  pcl::visualization::PCLVisualizer& visualizer();
+private:
+  PclCameraTrajectoryVisualizerImpl* impl_;
+};
+
+#endif /* CAMERA_TRAJECTORY_VISUALIZER_H_ */

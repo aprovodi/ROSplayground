@@ -11,6 +11,7 @@ SceneCloudView::SceneCloudView()
 {
     spheres_cloud_ptr_ = pcl17::PointCloud<pcl17::PointXYZ>::Ptr(new pcl17::PointCloud<pcl17::PointXYZ>);
     current_cloud_ptr_ = pcl17::PointCloud<pcl17::PointXYZ>::Ptr(new pcl17::PointCloud<pcl17::PointXYZ>);
+    mesh_ptr_ = boost::shared_ptr<pcl17::PolygonMesh>(new pcl17::PolygonMesh());
 
     //cloud_viewer_ = pcl17::visualization::PCLVisualizer::Ptr(new pcl17::visualization::PCLVisualizer("Scene Cloud Viewer"));
 
@@ -94,7 +95,7 @@ void SceneCloudView::updateCellsCloud(const cvpr_tum::TsdfVolume::TsdfVolumeCons
     for (unsigned int x = 0; x < v_res; ++x)
         for (unsigned int y = 0; y < v_res; ++y)
             for (unsigned int z = 0; z < v_res; ++z)
-                if (fabs(volume->v(z,y,x)) < 0.01f)
+                if (fabs(volume->getv(z,y,x)) < 0.01f)
                     current_cloud_ptr_->points.push_back(pcl17::PointXYZ(x*vx_sz, y*vx_sz, z*vx_sz));
 }
 

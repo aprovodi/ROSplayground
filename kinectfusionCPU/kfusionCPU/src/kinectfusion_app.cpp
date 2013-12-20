@@ -27,18 +27,20 @@ struct kfusionCpuApp {
         pose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped> (topic_translation, queue_size);
 
         // init Kfusion
-        nh_.param("world_size", world_size_, 3.0);
+        nh_.param("world_size", world_size_, 4.0);
         Eigen::Vector3f volume_size = Eigen::Vector3f::Constant(world_size_/*meters*/);
         kfusionCPU_.volume().setSize(volume_size);
 
         Eigen::Matrix3f R = Eigen::Matrix3f::Identity();
-        Eigen::Vector3f t = -Eigen::Vector3f(0, 0, volume_size (2) / 2 * 1.0f);
+        //Eigen::Vector3f t = -Eigen::Vector3f((3.0f*30/64), 0, 0);// volume_size (2) / 2 * 1.0f);
+        //Eigen::Vector3f t = -Eigen::Vector3f(0.f, 0.f, volume_size (2) / 2.f);
+        Eigen::Vector3f t = Eigen::Vector3f(volume_size (2) / 2.f, volume_size (2) / 2.f, 0.f);
 
         Eigen::Affine3f pose = Eigen::Translation3f(t) * Eigen::AngleAxisf(R);
         kfusionCPU_.setInitalCameraPose(pose);
 
-        kfusionCPU_.volume().setPositiveTsdfTruncDist(0.050f/*meters*/);
-        kfusionCPU_.volume().setNegativeTsdfTruncDist(-0.030f/*meters*/);
+        kfusionCPU_.volume().setPositiveTsdfTruncDist(0.020f/*meters*/);
+        kfusionCPU_.volume().setNegativeTsdfTruncDist(-0.020f/*meters*/);
     }
 
     ~kfusionCpuApp() { }
@@ -93,7 +95,22 @@ struct kfusionCpuApp {
         volume_msg.neg_trunc_dist = vol.getNegativeTsdfTruncDist();
 
         volume_msg.data.resize(vol.getNumVoxels());
-        std::copy(vol.begin(), vol.end(), volume_msg.data.begin());
+
+        for (unsigned int z = 0; z < 64; ++z) {
+            for (unsigned int y = 0; y < 64; y++) {
+                for (unsigned int x = 0; x < 64; x++) {
+                    unsigned int idx_curr = 64 * (z * 64 + y) + x;
+                    Eigen::Vector3i ind_shifted = kfusionCPU_.getCircularBufferStructure()->shift_tsdf_indeces(x,y,z);
+                    idx_curr = 64 * (ind_shifted(2) * 64 + ind_shifted(1)) + ind_shifted(0);
+                    float* pos_value = vol.begin() + idx_curr;
+                    // shift the pointer to relative indices
+                    //kfusionCPU_.getCircularBufferStructure()->shift_tsdf_pointer(&pos_value);
+                    volume_msg.data[idx_curr] = *pos_value;
+                }
+            }
+        }
+
+        //std::copy(vol.begin(), vol.end(), volume_msg.data.begin());
 
         volume_pub_.publish(volume_msg);
     }

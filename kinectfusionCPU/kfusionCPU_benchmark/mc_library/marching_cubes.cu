@@ -1,0 +1,447 @@
+#define MARCHINGCUBES_INTERNAL 1
+#include "marching_cubes.h"
+#include <thrust/scan.h>
+#include <thrust/functional.h>
+
+#include <iostream>
+#include <fstream>
+
+static void HandleError(cudaError_t err, const char *file, int line)
+{
+    if (err != cudaSuccess)
+    {
+        printf("%s in %s at line %d\n", cudaGetErrorString(err), file, line);
+        exit(EXIT_FAILURE);
+    }
+}
+#define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
+
+// The number of threads to use for triangle generation
+// (limited by shared memory size)
+#define NTHREADS 48
+
+// The number of threads to use for all of the other kernels
+#define KERNTHREADS 256
+
+
+//
+// CUDA textures containing marching cubes look-up tables
+// Note: SIMD marching cubes implementations have no need for the edge table
+//
+texture<int, 1, cudaReadModeElementType> triTex;
+texture<unsigned int, 1, cudaReadModeElementType> numVertsTex;
+
+static __device__ __forceinline__ float isoValue() { return CUDAMarchingCubes::ISOVALUE; }
+
+// sample volume data set at a point p, p CAN NEVER BE OUT OF BOUNDS
+__device__ __forceinline__ float sampleVolume(const float * data,
+                             uint3 p, uint3 gridSize) {
+    return data[(p.z*gridSize.x*gridSize.y) + (p.y*gridSize.x) + p.x];
+}
+
+// compute position in 3d grid from 1d index
+__device__ uint3 calcGridPos(unsigned int i, uint3 gridSize) {
+    uint3 gridPos;
+    unsigned int gridsizexy = gridSize.x * gridSize.y;
+    gridPos.z = i / gridsizexy;
+    unsigned int tmp1 = i - (gridsizexy * gridPos.z);
+    gridPos.y = tmp1 / gridSize.x;
+    gridPos.x = tmp1 - (gridSize.x * gridPos.y);
+    return gridPos;
+}
+
+// compute interpolated vertex along an edge
+__device__ __forceinline__ float3
+vertexInterp(float3 p0, float3 p1, float f0, float f1) {
+    float t = (isoValue() - f0) / (f1 - f0 + 1e-15f);
+    float x = p0.x + t * (p1.x - p0.x);
+    float y = p0.y + t * (p1.y - p0.y);
+    float z = p0.z + t * (p1.z - p0.z);
+    return make_float3 (x, y, z);
+}
+
+__device__ __forceinline__ unsigned int
+computeCubeIndex(float field[8]) {
+    // calculate flag indicating if each vertex is inside or outside isosurface
+    unsigned int cubeindex;
+    cubeindex =  ((unsigned int) (field[0] < isoValue()));
+    cubeindex += ((unsigned int) (field[1] < isoValue())) * 2;
+    cubeindex += ((unsigned int) (field[2] < isoValue())) * 4;
+    cubeindex += ((unsigned int) (field[3] < isoValue())) * 8;
+    cubeindex += ((unsigned int) (field[4] < isoValue())) * 16;
+    cubeindex += ((unsigned int) (field[5] < isoValue())) * 32;
+    cubeindex += ((unsigned int) (field[6] < isoValue())) * 64;
+    cubeindex += ((unsigned int) (field[7] < isoValue())) * 128;
+
+    return cubeindex;
+}
+
+// classify voxel based on number of vertices it will generate one thread per two voxels
+__global__ void
+// __launch_bounds__ ( KERNTHREADS, 1 )
+classifyVoxel(uint2 * voxelVerts,
+              float * volume,
+              uint3 gridSize,
+              unsigned int numVoxels, float3 voxelSize) {
+    uint3 gridPos;
+    unsigned int i;
+
+    // Compute voxel index using 2-D thread indexing
+    unsigned int blockId = (blockIdx.y * gridDim.x) + blockIdx.x;
+
+    i = (blockId * blockDim.x) + threadIdx.x;
+
+    // safety check
+    if (i >= numVoxels)
+        return;
+
+    // compute current grid position
+    gridPos = calcGridPos(i, gridSize);
+
+    uint2 numVerts = make_uint2(0, 0); // initialize vertex output to zero
+
+    // use just the maximum voxel dimension
+    if (gridPos.x > (gridSize.x - 2) || gridPos.y > (gridSize.y - 2) || gridPos.z > (gridSize.z - 2)) {
+        voxelVerts[i] = numVerts; // no vertices returned
+        return;
+    }
+
+    // read field values at neighbouring grid vertices
+    float field[8];
+    field[0] = sampleVolume(volume, gridPos, gridSize);
+    field[1] = sampleVolume(volume, gridPos + make_uint3(1, 0, 0), gridSize);
+    field[2] = sampleVolume(volume, gridPos + make_uint3(1, 1, 0), gridSize);
+    field[3] = sampleVolume(volume, gridPos + make_uint3(0, 1, 0), gridSize);
+    field[4] = sampleVolume(volume, gridPos + make_uint3(0, 0, 1), gridSize);
+    field[5] = sampleVolume(volume, gridPos + make_uint3(1, 0, 1), gridSize);
+    field[6] = sampleVolume(volume, gridPos + make_uint3(1, 1, 1), gridSize);
+    field[7] = sampleVolume(volume, gridPos + make_uint3(0, 1, 1), gridSize);
+
+     // calculate flag indicating if each vertex is inside or outside isosurface
+     unsigned int cubeindex = computeCubeIndex(field);
+
+    // read number of vertices from texture
+    numVerts.x = tex1Dfetch(numVertsTex, cubeindex);
+
+    numVerts.y = (numVerts.x > 0);
+
+    voxelVerts[i] = numVerts;
+}
+
+
+// compact voxel array
+__global__ void
+// __launch_bounds__ ( KERNTHREADS, 1 )
+compactVoxels(unsigned int * compactedVoxelArray,
+              const uint2 * voxelOccupied,
+              unsigned int lastVoxel, unsigned int numVoxels,
+              unsigned int numVoxelsp1) {
+    unsigned int blockId = (blockIdx.y * gridDim.x) + blockIdx.x;
+    unsigned int i = (blockId * blockDim.x) + threadIdx.x;
+
+    if ((i < numVoxels) && ((i < numVoxelsp1) ? voxelOccupied[i].y < voxelOccupied[i+1].y : lastVoxel))
+      compactedVoxelArray[ voxelOccupied[i].y ] = i;
+}
+
+ // version that calculates only triangle vertices
+ __global__ void
+ // __launch_bounds__ ( NTHREADS, 1 )
+ generateTriangleVerticesSMEM(float3* output,
+                              const unsigned int * compactedVoxelArray,
+                              const uint2 * numVertsScanned,
+                              float * volume,
+                              uint3 gridSize, float3 voxelSize,
+                              unsigned int activeVoxels, unsigned int maxVertsM3) {
+     unsigned int zOffset = blockIdx.z * gridDim.x * gridDim.y;
+     unsigned int blockId = (blockIdx.y * gridDim.x) + blockIdx.x;
+     unsigned int i = zOffset * (blockDim.x * blockDim.y) + (blockId * blockDim.x) + threadIdx.x;
+
+     if (i >= activeVoxels)
+         return;
+
+     unsigned int voxel = compactedVoxelArray[i];
+
+     // compute position in 3d grid
+     uint3 gridPos = calcGridPos(voxel, gridSize);
+
+     float3 p;
+     p.x = gridPos.x * voxelSize.x;
+     p.y = gridPos.y * voxelSize.y;
+     p.z = gridPos.z * voxelSize.z;
+
+     // calculate cell vertex positions
+     float3 v[8];
+     v[0] = p;
+     v[1] = p + make_float3(voxelSize.x, 0, 0);
+     v[2] = p + make_float3(voxelSize.x, voxelSize.y, 0);
+     v[3] = p + make_float3(0, voxelSize.y, 0);
+     v[4] = p + make_float3(0, 0, voxelSize.z);
+     v[5] = p + make_float3(voxelSize.x, 0, voxelSize.z);
+     v[6] = p + make_float3(voxelSize.x, voxelSize.y, voxelSize.z);
+     v[7] = p + make_float3(0, voxelSize.y, voxelSize.z);
+
+     float field[8];
+     field[0] = sampleVolume(volume, gridPos, gridSize);
+     field[1] = sampleVolume(volume, gridPos + make_uint3(1, 0, 0), gridSize);
+     field[2] = sampleVolume(volume, gridPos + make_uint3(1, 1, 0), gridSize);
+     field[3] = sampleVolume(volume, gridPos + make_uint3(0, 1, 0), gridSize);
+     field[4] = sampleVolume(volume, gridPos + make_uint3(0, 0, 1), gridSize);
+     field[5] = sampleVolume(volume, gridPos + make_uint3(1, 0, 1), gridSize);
+     field[6] = sampleVolume(volume, gridPos + make_uint3(1, 1, 1), gridSize);
+     field[7] = sampleVolume(volume, gridPos + make_uint3(0, 1, 1), gridSize);
+
+     // recalculate flag
+     unsigned int cubeindex = computeCubeIndex(field);
+
+
+     // find the vertices where the surface intersects the cube
+     // Note: SIMD marching cubes implementations have no need
+     //       for an edge table, because branch divergence eliminates any
+     //       potential performance gain from only computing the per-edge
+     //       vertices when indicated by the edgeTable.
+
+     // Use shared memory to keep register pressure under control.
+     // No need to call __syncthreads() since each thread uses its own
+     // private shared memory buffer.
+     __shared__ float3 vertlist[12*NTHREADS];
+
+     vertlist[threadIdx.x] = vertexInterp(v[0], v[1], field[0], field[1]);
+     vertlist[NTHREADS+threadIdx.x] = vertexInterp(v[1], v[2], field[1], field[2]);
+     vertlist[(NTHREADS*2)+threadIdx.x] = vertexInterp(v[2], v[3], field[2], field[3]);
+     vertlist[(NTHREADS*3)+threadIdx.x] = vertexInterp(v[3], v[0], field[3], field[0]);
+     vertlist[(NTHREADS*4)+threadIdx.x] = vertexInterp(v[4], v[5], field[4], field[5]);
+     vertlist[(NTHREADS*5)+threadIdx.x] = vertexInterp(v[5], v[6], field[5], field[6]);
+     vertlist[(NTHREADS*6)+threadIdx.x] = vertexInterp(v[6], v[7], field[6], field[7]);
+     vertlist[(NTHREADS*7)+threadIdx.x] = vertexInterp(v[7], v[4], field[7], field[4]);
+     vertlist[(NTHREADS*8)+threadIdx.x] = vertexInterp(v[0], v[4], field[0], field[4]);
+     vertlist[(NTHREADS*9)+threadIdx.x] = vertexInterp(v[1], v[5], field[1], field[5]);
+     vertlist[(NTHREADS*10)+threadIdx.x] = vertexInterp(v[2], v[6], field[2], field[6]);
+     vertlist[(NTHREADS*11)+threadIdx.x] = vertexInterp(v[3], v[7], field[3], field[7]);
+
+     // output triangle vertices
+     unsigned int numVerts = tex1Dfetch(numVertsTex, cubeindex);
+
+     for(int i=0; i<numVerts; i+=3) {
+         unsigned int index = numVertsScanned[voxel].x + i;
+
+         float3 *vert[3];
+         int edge;
+         edge = tex1Dfetch(triTex, (cubeindex*16) + i);
+         vert[0] = &vertlist[(edge*NTHREADS)+threadIdx.x];
+         edge = tex1Dfetch(triTex, (cubeindex*16) + i + 1);
+         vert[1] = &vertlist[(edge*NTHREADS)+threadIdx.x];
+         edge = tex1Dfetch(triTex, (cubeindex*16) + i + 2);
+         vert[2] = &vertlist[(edge*NTHREADS)+threadIdx.x];
+
+         if (index < maxVertsM3) {
+             output[index  ] = *vert[0];
+             output[index+1] = *vert[1];
+             output[index+2] = *vert[2];
+         }
+     }
+ }
+
+ __global__ void
+// __launch_bounds__ ( KERNTHREADS, 1 )
+offsetTriangleVertices(float3 * pos, float3 origin, unsigned int numVertsM1) {
+  unsigned int zOffset = blockIdx.z * gridDim.x * gridDim.y;
+  unsigned int blockId = (blockIdx.y * gridDim.x) + blockIdx.x;
+  unsigned int i = zOffset + (blockId * blockDim.x) + threadIdx.x;
+
+  if (i > numVertsM1)
+    return;
+
+  float3 p = pos[i];
+  p.x += origin.x;
+  p.y += origin.y;
+  p.z += origin.z;
+  pos[i] = p;
+}
+
+CUDAMarchingCubes::CUDAMarchingCubes() {
+    // initialize values
+    numVoxels_    = 0;
+    activeVoxels = 0;
+    totalVerts   = 0;
+    origin_ = make_float3(0,0,0);
+
+    d_voxelVerts = 0;
+    d_numVertsTable = 0;
+    d_triTable = 0;
+    initialized = false;
+}
+
+CUDAMarchingCubes::~CUDAMarchingCubes() {
+    Cleanup();
+}
+
+void allocateTextures(int **d_triTable, unsigned int **d_numVertsTable) {
+    cudaChannelFormatDesc channelDescSigned = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindSigned);
+
+    HANDLE_ERROR( cudaMalloc((void**) d_triTable, 256*16*sizeof(int)) );
+    HANDLE_ERROR( cudaMemcpy((void *)*d_triTable, (void *)triTable, 256*16*sizeof(int), cudaMemcpyHostToDevice) );
+    HANDLE_ERROR( cudaBindTexture(0, triTex, *d_triTable, channelDescSigned) );
+
+    cudaChannelFormatDesc channelDescUnsigned = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindUnsigned);
+	HANDLE_ERROR( cudaMalloc((void**) d_numVertsTable, 256*sizeof(unsigned int)) );
+    HANDLE_ERROR( cudaMemcpy((void *)*d_numVertsTable, (void *)numVertsTable, 256*sizeof(unsigned int), cudaMemcpyHostToDevice) );
+    HANDLE_ERROR( cudaBindTexture(0, numVertsTex, *d_numVertsTable, channelDescUnsigned) );
+}
+
+void CUDAMarchingCubes::Cleanup() {
+    if (d_volume) cudaFree(d_volume);
+    if (d_triTable) cudaFree(d_triTable);
+    if (d_numVertsTable) cudaFree(d_numVertsTable);
+    if (d_voxelVerts) cudaFree(d_voxelVerts);
+    if (d_compVoxelArray) cudaFree(d_compVoxelArray);
+
+    numVoxels_ = 0;
+    d_volume = 0;
+    d_triTable = 0;
+    d_numVertsTable = 0;
+    d_voxelVerts = 0;
+    d_compVoxelArray = 0;
+    initialized = false;
+}
+
+bool CUDAMarchingCubes::Initialize(uint3 gridSize) {
+    // check if already initialized
+    if (initialized) return false;
+
+    numVoxels_ =  gridSize.x*gridSize.y*gridSize.z;
+
+    HANDLE_ERROR( cudaMalloc((void**)&d_volume, numVoxels_ * sizeof(float)) );
+
+    // allocate textures
+    allocateTextures(&d_triTable, &d_numVertsTable);
+
+    // allocate device memory
+    if (cudaMalloc((void**) &d_voxelVerts, sizeof(uint2) * numVoxels_) != cudaSuccess) {
+        Cleanup();
+        return false;
+    }
+    if (cudaMalloc((void**) &d_compVoxelArray, sizeof(unsigned int) * numVoxels_) != cudaSuccess) {
+        Cleanup();
+        return false;
+    }
+
+     // success
+    initialized = true;
+    return true;
+}
+
+void ThrustScanWrapperUint2(uint2* output, uint2* input, unsigned int numElements) {
+    const uint2 zero = make_uint2(0, 0);
+    thrust::exclusive_scan(thrust::device_ptr<uint2>(input),
+                           thrust::device_ptr<uint2>(input + numElements),
+                           thrust::device_ptr<uint2>(output),
+                           zero);
+}
+
+bool CUDAMarchingCubes::computeIsosurface(float * volume_data,
+										unsigned int grid_size, float world_size,
+										float* &triangles_buffer, uint& total_vertexes) {
+//    gridSize_ = make_uint3(grid_size_x, grid_size_y, grid_size_z);
+
+//    voxelSize_ = make_float3(world_size_x / gridSize_.x,
+//	                    world_size_y / gridSize_.y,
+//	                    world_size_z / gridSize_.z);
+    gridSize_ = make_uint3(grid_size);
+
+    voxelSize_ = make_float3(world_size / gridSize_.x,
+	                    world_size / gridSize_.y,
+	                    world_size / gridSize_.z);
+
+    // Setup
+    if (!Initialize(gridSize_))
+       return false;
+
+    HANDLE_ERROR(cudaMemcpy(d_volume, volume_data, numVoxels_ * sizeof(float), cudaMemcpyHostToDevice));
+
+    /////////////////////////////////////////////////////////////////computeIsosurfaceVerts
+    int threads = 256;
+    dim3 grid((unsigned int) (ceil(float(numVoxels_) / float(threads))), 1, 1);
+
+    // get around maximum grid size of 65535 in each dimension
+    if (grid.x > 65535) {
+        grid.y = (unsigned int) (ceil(float(grid.x) / 32768.0f));
+        grid.x = 32768;
+    }
+
+    // calculate number of vertices need per voxel
+    classifyVoxel<<<grid, threads>>>(d_voxelVerts, d_volume, gridSize_, numVoxels_, voxelSize_);
+
+    // scan voxel vertex/occupation array (use in-place prefix sum for lower memory consumption)
+    uint2 lastElement, lastScanElement;
+    HANDLE_ERROR( cudaMemcpy((void *) &lastElement, (void *)(d_voxelVerts + numVoxels_-1), sizeof(uint2), cudaMemcpyDeviceToHost) );
+
+    ThrustScanWrapperUint2(d_voxelVerts, d_voxelVerts, numVoxels_);
+
+    // read back values to calculate total number of non-empty voxels
+    // since we are using an exclusive scan, the total is the last value of
+    // the scan result plus the last value in the input array
+    HANDLE_ERROR( cudaMemcpy((void *) &lastScanElement, (void *) (d_voxelVerts + numVoxels_-1), sizeof(uint2), cudaMemcpyDeviceToHost) );
+    activeVoxels = lastElement.y + lastScanElement.y;
+    // add up total number of vertices
+    totalVerts = lastElement.x + lastScanElement.x;
+
+    if (activeVoxels==0) {
+        // return if there are no full voxels
+        totalVerts = 0;
+        total_vertexes = totalVerts;
+		triangles_buffer = NULL;
+        Cleanup();
+        return false;
+    }
+
+    grid.x = (unsigned int) (ceil(float(numVoxels_) / float(threads)));
+    grid.y = grid.z = 1;
+    // get around maximum grid size of 65535 in each dimension
+    if (grid.x > 65535) {
+        grid.y = (unsigned int) (ceil(float(grid.x) / 32768.0f));
+        grid.x = 32768;
+    }
+
+    // compact voxel index array
+    compactVoxels<<<grid, threads>>>(d_compVoxelArray, d_voxelVerts, lastElement.y, numVoxels_, numVoxels_ + 1);
+
+    dim3 grid2((unsigned int) (ceil(float(activeVoxels) / (float) NTHREADS)), 1, 1);
+    while(grid2.x > 65535) {
+        grid2.x = (unsigned int) (ceil(float(grid2.x) / 2.0f));
+        grid2.y *= 2;
+    }
+
+    float3* d_triangles_buffer;
+    HANDLE_ERROR( cudaMalloc((void**) &d_triangles_buffer, totalVerts*sizeof(float3)) );
+
+    // separate computation of vertices and vertex color/normal for higher occupancy and speed
+    generateTriangleVerticesSMEM<<<grid2, NTHREADS>>>(d_triangles_buffer, d_compVoxelArray, d_voxelVerts,
+                                                        d_volume, gridSize_, voxelSize_, activeVoxels, totalVerts - 3);
+
+/*
+     float3 gridSizeInv = make_float3(1.0f / float(gridSize_.x), 1.0f / float(gridSize_.y), 1.0f / float(gridSize_.z));
+     float3 bBoxInv = make_float3(1.0f / dim.x, 1.0f / dim.y, 1.0f / dim.z);
+
+      dim grid3 = dim3((unsigned int) (ceil(float(totalVerts) / (float) threads)), 1, 1);
+      while(grid3.x > 65535) {
+          grid3.x = (unsigned int) (ceil(float(grid3.x) / 2.0f));
+          grid3.y *= 2;
+      }
+      while(grid3.y > 65535) {
+          grid3.y = (unsigned int) (ceil(float(grid3.y) / 2.0f));
+          grid3.z *= 2;
+      }
+
+      offsetTriangleVertices<<<grid3, threads>>>(vertOut, origin_, totalVerts - 1);
+*/
+	triangles_buffer = (float*)malloc(3*totalVerts*sizeof(float));
+    
+	HANDLE_ERROR( cudaMemcpy(triangles_buffer, d_triangles_buffer, 3*totalVerts*sizeof(float), cudaMemcpyDeviceToHost) );
+	cudaFree(d_triangles_buffer);
+
+	total_vertexes = totalVerts;
+
+ 	// Tear down and free resources
+ 	Cleanup();
+ 	return true;
+}

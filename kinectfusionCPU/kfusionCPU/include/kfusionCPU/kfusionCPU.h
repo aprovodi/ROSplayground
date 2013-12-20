@@ -20,8 +20,8 @@ namespace cvpr_tum {
 
 //#define TIME_MEASUREMENTS
 
-const float VOLUME_SIZE = 3.0f;         // in meters
-const float DISTANCE_THRESHOLD = 1.0f; // when the camera target point is farther than DISTANCE_THRESHOLD from the current cube's center, shifting occurs. In meters
+const float VOLUME_SIZE = 4.0f;         // in meters
+const float DISTANCE_THRESHOLD = 0.5f; // when the camera target point is farther than DISTANCE_THRESHOLD from the current cube's center, shifting occurs. In meters
 
 class kfusionCPU {
     enum Pyramid { LEVELS = 5 };
@@ -91,6 +91,7 @@ class kfusionCPU {
 
         /** \brief Returns TSDF volume storage */
         TsdfVolume& volume() { return *tsdf_volume_; }
+        TsdfVolume::TsdfVolumePtr volume_ptr() { return tsdf_volume_; }
         TsdfVolume& first_volume();
 
         /** \brief Returns camera pose at given time, default the last pose
@@ -175,7 +176,9 @@ class kfusionCPU {
         const float mov_change_max_;
 
         /** \brief Size of the TSDF volume in meters. */
-        float volume_size_;
+        Eigen::Vector3f volume_size_;
+
+        bool disable_intergration_;
 
         /** \brief Allocates all internal buffers.
          * \param[in] rows_arg

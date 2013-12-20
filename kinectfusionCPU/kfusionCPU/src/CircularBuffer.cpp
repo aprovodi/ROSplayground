@@ -9,8 +9,11 @@ bool cvpr_tum::CircularBuffer::checkForShift (const TsdfVolume::TsdfVolumePtr vo
     targetPoint(0) = 0.0f;
     targetPoint(1) = 0.0f;
     targetPoint(2) = distance_camera_target; // place the point at camera position + distance_camera_target on Z
-    targetPoint += volume_size / 2;
     targetPoint = cam_pose * targetPoint;
+    targetPoint -= volume_size / 2;
+
+    //std::cout << "cam_pose : " << cam_pose.translation()(0) << " " << cam_pose.translation()(1) << " " << cam_pose.translation()(2) << std::endl;
+    std::cout << "targetPoint : " << targetPoint(0) << " " << targetPoint(1) << " " << targetPoint(2) << std::endl;
 
 //    std::cout << "targetPoint: " << targetPoint << std::endl;
 
@@ -22,7 +25,7 @@ bool cvpr_tum::CircularBuffer::checkForShift (const TsdfVolume::TsdfVolumePtr vo
 
 //    std::cout << "euclideanDistance: " << (targetPoint - center_cube).norm() << std::endl;
 
-    if ((targetPoint - center_cube).norm() > distance_threshold_)
+    if ((targetPoint - origin_metric).norm() > distance_threshold_)
         result = true;
 
     if (!perform_shift)
@@ -93,7 +96,7 @@ void cvpr_tum::CircularBuffer::performShift (const TsdfVolume::TsdfVolumePtr vol
     */
 
     // clear buffer slice and update the world model
-    clearTSDFSlice (volume, offset_X, offset_Y, offset_Z);
+    //clearTSDFSlice (volume, offset_X, offset_Y, offset_Z);
 
     // shift buffer addresses
     shiftOrigin (volume, Eigen::Vector3i(offset_X, offset_Y, offset_Z));
@@ -110,7 +113,8 @@ void cvpr_tum::CircularBuffer::computeAndSetNewCubeMetricOrigin (const Eigen::Ve
 {
     // compute new origin for the cube, based on the target point
     Eigen::Vector3f new_cube_origin_meters;
-    new_cube_origin_meters = target_point - volume_size / 2.0f;
+    new_cube_origin_meters = target_point;// - volume_size / 2.0f;
+    //new_cube_origin_meters(2) = target_point(2) - volume_size(2) / 2.0f;
     std::cout << "The old cube's metric origin was: " << origin_metric << std::endl;
     std::cout << "The new cube's metric origin is now: " << new_cube_origin_meters << std::endl;
 
@@ -119,17 +123,35 @@ void cvpr_tum::CircularBuffer::computeAndSetNewCubeMetricOrigin (const Eigen::Ve
     shiftY = (int)( (new_cube_origin_meters(1) - origin_metric(1)) * ( volume_resolution(1) / (float) (volume_size(1)) ) );
     shiftZ = (int)( (new_cube_origin_meters(2) - origin_metric(2)) * ( volume_resolution(2) / (float) (volume_size(2)) ) );
 
+    std::cout << "SHIFT: " << "shiftX: " << shiftX << "shiftY: " << shiftY << "shiftZ: " << shiftZ << std::endl;
+
     // update the cube's metric origin
     origin_metric = new_cube_origin_meters;
 }
 
 void cvpr_tum::CircularBuffer::clearTSDFSlice (TsdfVolume::TsdfVolumePtr tsdf_volume, int shiftX, int shiftY, int shiftZ)
 {
+    /*
     for (unsigned int x = minBounds_(0); x < maxBounds_(0); x++) {
         for (unsigned int y = minBounds_(1); y < maxBounds_(1); y++) {
             for (unsigned int z = minBounds_(2); z < maxBounds_(2); ++z) {
                 //idx_curr = volume_resolution(0) * (z * volume_resolution(1) + y) + x;
                 tsdf_volume->setv(x,y,z, 1.f);
+            }
+        }
+    }
+    */
+    unsigned int idx_curr = 0;
+    for (unsigned int z = 0; z < volume_resolution(2); z++) {
+        for (unsigned int y = 0; y < volume_resolution(1); y++) {
+            for (unsigned int x = 0; x < volume_resolution(0); x++) {
+                if ((x >= minBounds_(0) && x < maxBounds_(0)) || (y >= minBounds_(1) && y < maxBounds_(1)) || (z >= minBounds_(2) && z < maxBounds_(2)))
+                {
+                    idx_curr = volume_resolution(0) * (z * volume_resolution(1) + y) + x;
+                    float* pos_value = tsdf_volume->begin() + idx_curr;
+                    shift_tsdf_pointer(&pos_value);
+                    *pos_value = tsdf_volume->getPositiveTsdfTruncDist();
+                }
             }
         }
     }
@@ -146,7 +168,7 @@ void cvpr_tum::CircularBuffer::computeMinMaxBounds(int newX, int newY, int newZ)
     else
     {
         minBounds_(0) = newX + volume_resolution(0) - 1;
-        maxBounds_(0) = (float)origin_GRID(0) + volume_resolution(0) - 1;
+        maxBounds_(0) = origin_GRID(0) + volume_resolution(0) - 1;
     }
 
     if (minBounds_(0) > maxBounds_(0))
@@ -208,4 +230,6 @@ void cvpr_tum::CircularBuffer::computeMinMaxBounds(int newX, int newY, int newZ)
         minBounds_(2) += volume_resolution(2);
         maxBounds_(2) += volume_resolution(2);
     }
+    std::cout << "minBounds_: " << minBounds_(0) << " " << minBounds_(1) << " " << minBounds_(2) << std::endl;
+    std::cout << "maxBounds_: " << maxBounds_(0) << " " << maxBounds_(1) << " " << maxBounds_(2) << std::endl;
 }

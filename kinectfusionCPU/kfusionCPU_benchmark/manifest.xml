@@ -1,0 +1,18 @@
+<package>
+  <description brief="kfusionCPU_benchmark">
+
+     kfusionCPU_benchmark
+
+  </description>
+  <author>Artem Provodin</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/kfusionCPU_benchmark</url>
+  <depend package="roscpp"/>
+  <depend package="geometry_msgs"/>
+  <depend package="kfusionCPU"/>
+  <depend package="kfusionCPU_visualization"/>
+
+</package>
+
+

@@ -1,0 +1,15 @@
+#include <kfusionCPU_visualization/trajectory_visualizer.h>
+#include "kfusionCPU/internal.hpp"
+
+class NoopTrajectoryVisualizer : public TrajectoryVisualizer
+{
+public:
+  NoopTrajectoryVisualizer() {}
+
+  virtual ~NoopTrajectoryVisualizer() {}
+
+  virtual TrajectoryVisualizer& add(const Eigen::Affine3d& pose)
+  {
+    return *this;
+  }
+};
